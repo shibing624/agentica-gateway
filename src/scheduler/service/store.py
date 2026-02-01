@@ -3,12 +3,12 @@
 Refactored from task_store.py to work with the new ScheduledJob model.
 """
 import json
-import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+from loguru import logger
 
 from ..models import ScheduledJob, JobState
 from ..types import (
@@ -18,7 +18,7 @@ from ..types import (
     TaskChainPayload,
 )
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(module="scheduler.store")
 
 
 class JobStore:

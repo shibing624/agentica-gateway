@@ -5,9 +5,10 @@ This is the unified entry point for all scheduler operations.
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 from typing import Any, Callable
+
+from loguru import logger
 
 from ..models import ScheduledJob, JobCreate, JobPatch
 from ..types import (
@@ -22,7 +23,7 @@ from .events import EventEmitter, emit_job_event, EventTypes
 from . import ops
 from . import timer
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(module="scheduler.service")
 
 
 class SchedulerService:

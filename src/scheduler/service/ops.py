@@ -2,8 +2,9 @@
 
 Contains the main business logic for job management.
 """
-import logging
 from datetime import datetime
+
+from loguru import logger
 
 from ..models import ScheduledJob, JobCreate, JobPatch
 from ..schedule import compute_next_run_at_ms, now_ms
@@ -18,7 +19,7 @@ from .events import EventEmitter, emit_job_event, EventTypes
 from .store import JobStore
 from .state import SchedulerServiceState, SchedulerServiceDeps
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(module="scheduler.ops")
 
 
 async def add_job(

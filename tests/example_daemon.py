@@ -2,15 +2,17 @@
 import asyncio
 import logging
 from pathlib import Path
-
-from scheduler import (
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.scheduler import (
     SchedulerService,
     TaskParser,
     init_scheduler_tools,
     ALL_SCHEDULER_TOOLS,
     TOOL_IMPLEMENTATIONS,
 )
-from scheduler.executor import TaskExecutor, SimpleAgentRunner, MultiChannelNotificationSender
+from src.scheduler.executor import TaskExecutor, SimpleAgentRunner, MultiChannelNotificationSender
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

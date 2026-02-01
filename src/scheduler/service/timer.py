@@ -3,8 +3,9 @@
 Handles scheduling wake-ups and running due jobs.
 """
 import asyncio
-import logging
 from typing import TYPE_CHECKING, Any
+
+from loguru import logger
 
 from ..schedule import compute_next_run_at_ms, now_ms
 from ..types import JobStatus, RunStatus, RunResult
@@ -13,7 +14,7 @@ from .events import emit_job_event, EventTypes
 if TYPE_CHECKING:
     from .service import SchedulerService
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(module="scheduler.timer")
 
 
 async def arm_timer(service: "SchedulerService") -> None:

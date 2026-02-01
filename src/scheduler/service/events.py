@@ -2,13 +2,14 @@
 
 Emits events for job lifecycle changes.
 """
-import logging
 import time
 from typing import Any, Callable
 
+from loguru import logger
+
 from ..types import SchedulerEvent, HookPoint
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(module="scheduler.events")
 
 
 # Type alias for event handlers

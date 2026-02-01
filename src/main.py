@@ -750,7 +750,7 @@ async def setup_channels():
 
 async def handle_channel_message(message):
     """处理渠道消息"""
-    logger.info(f"[{message.channel.value}] {message.sender_id}: {message.content[:50]}...")
+    logger.info(f"[{message.channel.value}] {message.sender_id}: {message.content[:500]}")
 
     if not agent_service:
         logger.error("Agent service not ready")

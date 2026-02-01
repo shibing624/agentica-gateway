@@ -2,9 +2,10 @@
 
 Refactored to work with the new ScheduledJob model and support task chains.
 """
-import logging
 from datetime import datetime
 from typing import Any, Protocol, cast
+
+from loguru import logger
 
 from .models import ScheduledJob
 from .types import (
@@ -14,7 +15,7 @@ from .types import (
     PayloadKind,
 )
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(module="scheduler.executor")
 
 
 class AgentRunner(Protocol):
