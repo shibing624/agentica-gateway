@@ -25,7 +25,7 @@ def _to_json(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-# Singleton instances (initialized by daemon)
+# Singleton instances (initialized by gateway)
 _scheduler_service: SchedulerService | None = None
 _task_parser: TaskParser | None = None
 
@@ -36,7 +36,7 @@ def init_scheduler_tools(
 ) -> None:
     """Initialize the scheduler tools with service instances.
 
-    Call this during daemon startup.
+    Call this during gateway startup.
     """
     global _scheduler_service, _task_parser
     _scheduler_service = scheduler_service

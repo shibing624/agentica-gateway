@@ -32,8 +32,8 @@ DEFAULT_USER_ID = "default"
 
 # ============== Agent Runner for Scheduler ==============
 
-class DaemonAgentRunner:
-    """Agent runner that uses the daemon's AgentService for scheduled jobs."""
+class GatewayAgentRunner:
+    """Agent runner that uses the gateway's AgentService for scheduled jobs."""
 
     def __init__(self, agent_svc: AgentService):
         self.agent_service = agent_svc
@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     global agent_service, channel_manager, message_router, scheduler
 
     logger.info("=" * 50)
-    logger.info("  Agentica Daemon")
+    logger.info("  Agentica Gateway")
     logger.info(f"  Workspace: {settings.workspace_path}")
     logger.info(f"  Data dir: {settings.data_dir}")
     logger.info(f"  Model: {settings.model_provider}/{settings.model_name}")
@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
     # 初始化新的调度器
     db_path = settings.data_dir / "scheduler.db"
-    agent_runner = DaemonAgentRunner(agent_service)
+    agent_runner = GatewayAgentRunner(agent_service)
     executor = JobExecutor(agent_runner=agent_runner)
 
     scheduler = SchedulerService(
@@ -111,7 +111,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     except Exception as e:
         logger.error(f"Failed to start scheduler: {e}")
 
-    logger.info("Daemon started")
+    logger.info("Gateway started")
     logger.info(f"FastAPI docs: http://{settings.host}:{settings.port}/docs")
     logger.info(f"WebSocket: ws://{settings.host}:{settings.port}/ws")
 
@@ -125,7 +125,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 
 app = FastAPI(
-    title="Agentica Daemon",
+    title="Agentica Gateway",
     description="Python OpenClaw - AI Agent Gateway",
     version="0.1.0",
     lifespan=lifespan,
@@ -197,7 +197,7 @@ class JobResponse(BaseModel):
 async def root():
     """根路径"""
     return {
-        "name": "Agentica Daemon",
+        "name": "Agentica Gateway",
         "version": "0.1.0",
         "status": "running",
     }

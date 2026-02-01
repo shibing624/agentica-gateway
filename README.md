@@ -1,13 +1,13 @@
-# Agentica Daemon
+# Agentica Gateway
 
-Python 版 OpenClaw Gateway 服务，调用 [agentica](https://github.com/shibing624/agentica) SDK。
+Agentica Gateway 服务，调用 [agentica](https://github.com/shibing624/agentica) SDK。
 
-支持飞书、Telegram、Discord、Gradio 等多渠道接入的 AI Agent 网关。
+支持Lark(飞书)、WeCom(企微)、Telegram、Discord、Gradio 等多渠道接入的 AI Agent 网关。
 
 ## 特性
 
 - **FastAPI 服务** - REST API + WebSocket Gateway
-- **多渠道支持** - Gradio / 飞书 / Telegram / Discord
+- **多渠道支持** - Gradio / Lark / WeCom / Telegram / Discord
 - **调用 agentica SDK** - Agent / Memory / Skills / Tools
 - **消息路由** - 多 Agent 路由支持
 - **定时任务** - APScheduler Cron 调度
@@ -17,7 +17,7 @@ Python 版 OpenClaw Gateway 服务，调用 [agentica](https://github.com/shibin
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                   agentica-daemon                        │
+│                   agentica-gateway                       │
 │                                                          │
 │  ┌─────────────────────────────────────────────────┐    │
 │  │              FastAPI Application                 │    │
@@ -89,7 +89,7 @@ DISCORD_BOT_TOKEN=xxx
 uvicorn src.main:app --reload --port 8789
 
 # 生产模式
-agentica-daemon
+agentica-gateway
 ```
 
 ## API
@@ -124,7 +124,7 @@ ws://localhost:8789/ws
 ## 目录结构
 
 ```
-agentica-daemon/
+agentica-gateway/
 ├── src/
 │   ├── __init__.py
 │   ├── main.py              # FastAPI 主入口
@@ -157,8 +157,8 @@ agentica-daemon/
 
 ## 对比 OpenClaw
 
-| 功能 | agentica-daemon | OpenClaw |
-|------|-----------------|----------|
+| 功能 | agentica-gateway | OpenClaw |
+|------|------------------|----------|
 | 语言 | Python | TypeScript |
 | Agent SDK | agentica | 自实现 |
 | Gateway | FastAPI + WebSocket | Express + WebSocket |
