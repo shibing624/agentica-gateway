@@ -191,6 +191,16 @@ class JobResponse(BaseModel):
     next_run_at_ms: Optional[int] = None
 
 
+class BatchJobsRequest(BaseModel):
+    """批量任务操作请求"""
+    job_ids: List[str]
+
+
+class CloneJobRequest(BaseModel):
+    """克隆任务请求"""
+    new_name: Optional[str] = None
+
+
 # ============== REST API ==============
 
 @app.get("/")
@@ -503,6 +513,213 @@ async def resume_job(job_id: str, user_id: str):
 async def list_tasks():
     """列出定时任务（旧接口，已废弃）"""
     return await list_jobs()
+
+
+# ============== Scheduler Monitoring API ==============
+
+@app.get("/api/scheduler/stats")
+async def get_scheduler_stats():
+    """获取调度器全局统计"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    stats = await scheduler.get_stats()
+    return stats.to_dict()
+
+
+@app.get("/api/scheduler/jobs/{job_id}/stats")
+async def get_job_stats(job_id: str):
+    """获取单个任务统计"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    stats = await scheduler.get_job_stats(job_id)
+    if not stats:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return stats.to_dict()
+
+
+@app.get("/api/scheduler/jobs/{job_id}/runs")
+async def get_job_runs(
+    job_id: str,
+    limit: int = 20,
+    offset: int = 0,
+):
+    """获取任务执行历史"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    # 先检查任务是否存在
+    job = await scheduler.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    runs, total = await scheduler.get_job_runs(job_id, limit=limit, offset=offset)
+
+    return {
+        "job_id": job_id,
+        "runs": [run.to_dict() for run in runs],
+        "total": total,
+        "has_more": offset + len(runs) < total,
+    }
+
+
+@app.get("/api/scheduler/runs/recent")
+async def get_recent_runs(
+    limit: int = 20,
+    since_ms: Optional[int] = None,
+):
+    """获取最近执行记录"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    runs = await scheduler.get_recent_runs(limit=limit, since_ms=since_ms)
+
+    return {
+        "runs": [run.to_dict() for run in runs],
+        "total": len(runs),
+    }
+
+
+@app.get("/api/scheduler/runs/failed")
+async def get_failed_runs(
+    limit: int = 20,
+    since_ms: Optional[int] = None,
+):
+    """获取失败的执行记录"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    runs = await scheduler.get_failed_runs(limit=limit, since_ms=since_ms)
+
+    return {
+        "runs": [run.to_dict() for run in runs],
+        "total": len(runs),
+    }
+
+
+@app.get("/api/scheduler/jobs/upcoming")
+async def get_upcoming_jobs(
+    within_minutes: int = 30,
+    limit: int = 20,
+):
+    """获取即将执行的任务"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    from .scheduler import schedule_to_human
+
+    jobs = await scheduler.get_upcoming_jobs(within_minutes=within_minutes, limit=limit)
+
+    return {
+        "jobs": [
+            {
+                "id": job.id,
+                "name": job.name,
+                "next_run_at_ms": job.state.next_run_at_ms,
+                "schedule": schedule_to_human(job.schedule),
+            }
+            for job in jobs
+        ],
+        "within_minutes": within_minutes,
+    }
+
+
+# ============== Scheduler Management API ==============
+
+@app.post("/api/scheduler/jobs/{job_id}/retry")
+async def retry_job(job_id: str):
+    """重试失败的任务（强制立即执行）"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    job = await scheduler.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    result = await scheduler.retry_job(job_id)
+
+    return {
+        "job_id": result.job_id,
+        "status": result.status.value,
+        "started_at_ms": result.started_at_ms,
+        "finished_at_ms": result.finished_at_ms,
+        "result": str(result.result)[:500] if result.result else None,
+        "error": result.error,
+    }
+
+
+@app.post("/api/scheduler/jobs/{job_id}/clone")
+async def clone_job(job_id: str, request: CloneJobRequest):
+    """克隆任务"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    new_job = await scheduler.clone_job(job_id, new_name=request.new_name)
+    if not new_job:
+        raise HTTPException(status_code=404, detail="Source job not found")
+
+    from .scheduler import schedule_to_human
+
+    return {
+        "success": True,
+        "job": {
+            "id": new_job.id,
+            "name": new_job.name,
+            "schedule": schedule_to_human(new_job.schedule),
+            "status": new_job.status.value,
+            "next_run_at_ms": new_job.state.next_run_at_ms,
+        },
+    }
+
+
+@app.post("/api/scheduler/jobs/batch/pause")
+async def batch_pause_jobs(request: BatchJobsRequest):
+    """批量暂停任务"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    result = await scheduler.batch_pause(request.job_ids)
+
+    return {
+        "success": result.success,
+        "paused": result.processed,
+        "failed": result.failed_ids,
+        "errors": result.errors,
+    }
+
+
+@app.post("/api/scheduler/jobs/batch/resume")
+async def batch_resume_jobs(request: BatchJobsRequest):
+    """批量恢复任务"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    result = await scheduler.batch_resume(request.job_ids)
+
+    return {
+        "success": result.success,
+        "resumed": result.processed,
+        "failed": result.failed_ids,
+        "errors": result.errors,
+    }
+
+
+@app.post("/api/scheduler/jobs/batch/delete")
+async def batch_delete_jobs(request: BatchJobsRequest):
+    """批量删除任务"""
+    if not scheduler:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    result = await scheduler.batch_delete(request.job_ids)
+
+    return {
+        "success": result.success,
+        "deleted": result.processed,
+        "failed": result.failed_ids,
+        "errors": result.errors,
+    }
 
 
 # ============== WebSocket Gateway ==============

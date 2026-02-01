@@ -4,11 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+from dotenv import load_dotenv
+load_dotenv()
 
 
 @dataclass
@@ -23,7 +20,7 @@ class Settings:
 
     # 工作空间
     workspace_path: Path = field(default_factory=lambda: Path.home() / ".agentica" / "workspace")
-    data_dir: Path = field(default_factory=lambda: Path.home() / ".agentica")
+    data_dir: Path = field(default_factory=lambda: Path.home() / ".agentica" / "data")
 
     # 模型配置
     model_provider: str = "zhipuai"
@@ -65,10 +62,10 @@ class Settings:
 
             # 路径
             workspace_path=Path(os.getenv(
-                "WORKSPACE_PATH", str(Path.home() / ".agentica" / "workspace")
+                "AGENTICA_WORKSPACE_DIR", str(Path.home() / ".agentica" / "workspace")
             )),
             data_dir=Path(os.getenv(
-                "DATA_DIR", str(Path.home() / ".agentica")
+                "AGENTICA_DATA_DIR", str(Path.home() / ".agentica" / "data")
             )),
 
             # 模型

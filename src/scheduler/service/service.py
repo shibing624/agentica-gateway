@@ -5,17 +5,24 @@ This is the unified entry point for all scheduler operations.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional, List
+from copy import deepcopy
 
 from loguru import logger
 
 from ..models import ScheduledJob, JobCreate, JobPatch
 from ..types import (
     JobStatus,
+    RunStatus,
     RemoveResult,
     RunResult,
     SchedulerStatus,
+    SchedulerStats,
+    JobRun,
+    JobStats,
+    BatchResult,
 )
 from .state import SchedulerServiceDeps, SchedulerServiceState
 from .store import JobStore
@@ -317,3 +324,242 @@ class SchedulerService:
         # This is sync, so we can't actually query
         # Return empty for now, callers should use async list()
         return []
+
+    # ============== Monitoring & Statistics ==============
+
+    async def get_stats(self) -> SchedulerStats:
+        """Get comprehensive scheduler statistics.
+
+        Returns:
+            SchedulerStats with job counts and run statistics
+        """
+        stats = SchedulerStats(running=self.state.running)
+
+        # Get job counts by status
+        status_counts = await self.store.count_by_status()
+        stats.total_jobs = sum(status_counts.values())
+        stats.active_jobs = status_counts.get("active", 0)
+        stats.paused_jobs = status_counts.get("paused", 0)
+        stats.completed_jobs = status_counts.get("completed", 0)
+        stats.failed_jobs = status_counts.get("failed", 0)
+
+        # Get today's run stats
+        runs_today = await self.store.get_runs_stats_today()
+        stats.total_runs_today = runs_today.get("total", 0)
+        stats.success_runs_today = runs_today.get("success", 0)
+        stats.failed_runs_today = runs_today.get("failed", 0)
+        stats.success_rate_today = runs_today.get("success_rate", 0.0)
+        stats.avg_duration_ms_today = runs_today.get("avg_duration_ms", 0.0)
+
+        # Get next run time
+        stats.next_run_at_ms = await self.store.get_next_run_time()
+
+        return stats
+
+    async def get_job_stats(self, job_id: str) -> JobStats | None:
+        """Get statistics for a single job.
+
+        Args:
+            job_id: ID of the job
+
+        Returns:
+            JobStats or None if job doesn't exist
+        """
+        job = await self.store.get(job_id)
+        if not job:
+            return None
+
+        return await self.store.get_job_stats(job_id)
+
+    async def get_job_runs(
+        self,
+        job_id: str,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[JobRun], int]:
+        """Get execution history for a job.
+
+        Args:
+            job_id: ID of the job
+            limit: Maximum number of runs to return
+            offset: Offset for pagination
+
+        Returns:
+            Tuple of (runs list, total count)
+        """
+        return await self.store.get_runs(
+            job_id=job_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def get_recent_runs(
+        self,
+        limit: int = 20,
+        since_ms: int | None = None,
+    ) -> list[JobRun]:
+        """Get recent job runs across all jobs.
+
+        Args:
+            limit: Maximum number of runs
+            since_ms: Only get runs after this timestamp
+
+        Returns:
+            List of recent job runs
+        """
+        return await self.store.get_recent_runs(limit=limit, since_ms=since_ms)
+
+    async def get_failed_runs(
+        self,
+        limit: int = 20,
+        since_ms: int | None = None,
+    ) -> list[JobRun]:
+        """Get failed job runs.
+
+        Args:
+            limit: Maximum number of runs
+            since_ms: Only get runs after this timestamp
+
+        Returns:
+            List of failed job runs
+        """
+        return await self.store.get_failed_runs(limit=limit, since_ms=since_ms)
+
+    async def get_upcoming_jobs(
+        self,
+        within_minutes: int = 30,
+        limit: int = 20,
+    ) -> list[ScheduledJob]:
+        """Get jobs scheduled to run within the given time window.
+
+        Args:
+            within_minutes: Time window in minutes
+            limit: Maximum number of jobs
+
+        Returns:
+            List of upcoming jobs
+        """
+        within_ms = within_minutes * 60 * 1000
+        return await self.store.get_upcoming_jobs(within_ms=within_ms, limit=limit)
+
+    # ============== Batch Operations ==============
+
+    async def batch_pause(self, job_ids: list[str]) -> BatchResult:
+        """Pause multiple jobs.
+
+        Args:
+            job_ids: List of job IDs to pause
+
+        Returns:
+            BatchResult with success count and failures
+        """
+        result = BatchResult(success=True)
+
+        for job_id in job_ids:
+            try:
+                job = await self.pause(job_id)
+                if job:
+                    result.processed += 1
+                else:
+                    result.failed_ids.append(job_id)
+                    result.errors[job_id] = "Job not found"
+            except Exception as e:
+                result.failed_ids.append(job_id)
+                result.errors[job_id] = str(e)
+
+        result.success = len(result.failed_ids) == 0
+        return result
+
+    async def batch_resume(self, job_ids: list[str]) -> BatchResult:
+        """Resume multiple jobs.
+
+        Args:
+            job_ids: List of job IDs to resume
+
+        Returns:
+            BatchResult with success count and failures
+        """
+        result = BatchResult(success=True)
+
+        for job_id in job_ids:
+            try:
+                job = await self.resume(job_id)
+                if job:
+                    result.processed += 1
+                else:
+                    result.failed_ids.append(job_id)
+                    result.errors[job_id] = "Job not found"
+            except Exception as e:
+                result.failed_ids.append(job_id)
+                result.errors[job_id] = str(e)
+
+        result.success = len(result.failed_ids) == 0
+        return result
+
+    async def batch_delete(self, job_ids: list[str]) -> BatchResult:
+        """Delete multiple jobs.
+
+        Args:
+            job_ids: List of job IDs to delete
+
+        Returns:
+            BatchResult with success count and failures
+        """
+        result = BatchResult(success=True)
+
+        for job_id in job_ids:
+            try:
+                remove_result = await self.remove(job_id)
+                if remove_result.removed:
+                    result.processed += 1
+                else:
+                    result.failed_ids.append(job_id)
+                    result.errors[job_id] = remove_result.reason or "Failed to delete"
+            except Exception as e:
+                result.failed_ids.append(job_id)
+                result.errors[job_id] = str(e)
+
+        result.success = len(result.failed_ids) == 0
+        return result
+
+    async def clone_job(
+        self,
+        job_id: str,
+        new_name: str | None = None,
+    ) -> ScheduledJob | None:
+        """Clone an existing job.
+
+        Args:
+            job_id: ID of job to clone
+            new_name: Optional new name for the cloned job
+
+        Returns:
+            Newly created job, or None if source job not found
+        """
+        source_job = await self.store.get(job_id)
+        if not source_job:
+            return None
+
+        # Create a new job based on the source
+        job_create = JobCreate(
+            user_id=source_job.user_id,
+            agent_id=source_job.agent_id,
+            name=new_name or f"{source_job.name} (copy)",
+            description=source_job.description,
+            schedule=deepcopy(source_job.schedule),
+            payload=deepcopy(source_job.payload),
+            max_retries=source_job.max_retries,
+        )
+
+        return await self.add(job_create)
+
+    async def retry_job(self, job_id: str) -> RunResult:
+        """Retry a job (force immediate execution).
+
+        Args:
+            job_id: ID of job to retry
+
+        Returns:
+            RunResult from the execution
+        """
+        return await self.run(job_id, mode="force")

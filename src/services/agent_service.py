@@ -119,6 +119,7 @@ class AgentService:
                 instructions.append(self._get_scheduler_instructions())
 
             # 创建 DeepAgent（user_id 和 session_id 在调用时动态设置）
+            # NOTE: enable_multi_round=False，Model 层已内置递归工具调用（agentic loop）
             self._agent = DeepAgent(
                 model=model,
                 # 数据库配置（会话历史存储）
@@ -134,19 +135,7 @@ class AgentService:
                 # 工具配置
                 tools=all_tools if all_tools else None,
                 show_tool_calls=True,
-                tool_call_limit=20,
-                # 多轮对话
-                enable_multi_round=False,
-                max_rounds=10,
-                # 上下文管理
-                context_soft_limit=80000,
-                context_hard_limit=120000,
-                enable_context_overflow_handling=False,
-                # 反思和防重复
-                enable_step_reflection=False,
-                reflection_frequency=3,
-                enable_repetition_detection=True,
-                max_same_tool_calls=3,
+                tool_call_limit=40,
                 # 指令
                 instructions=instructions if instructions else None,
                 add_datetime_to_instructions=True,

@@ -337,3 +337,129 @@ class SchedulerStatus:
             "jobs_paused": self.jobs_paused,
             "next_run_at_ms": self.next_run_at_ms,
         }
+
+
+# ============== Monitoring Types ==============
+
+@dataclass
+class JobRun:
+    """Single execution record of a job."""
+    id: str
+    job_id: str
+    started_at_ms: int
+    finished_at_ms: int | None = None
+    status: RunStatus = RunStatus.OK
+    result: str | None = None
+    error: str | None = None
+    duration_ms: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "job_id": self.job_id,
+            "started_at_ms": self.started_at_ms,
+            "finished_at_ms": self.finished_at_ms,
+            "status": self.status.value,
+            "result": self.result,
+            "error": self.error,
+            "duration_ms": self.duration_ms,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "JobRun":
+        return cls(
+            id=data.get("id", ""),
+            job_id=data.get("job_id", ""),
+            started_at_ms=data.get("started_at_ms", 0),
+            finished_at_ms=data.get("finished_at_ms"),
+            status=RunStatus(data.get("status", "ok")),
+            result=data.get("result"),
+            error=data.get("error"),
+            duration_ms=data.get("duration_ms", 0),
+        )
+
+
+@dataclass
+class JobStats:
+    """Statistics for a single job."""
+    job_id: str
+    total_runs: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    success_rate: float = 0.0  # 0.0 - 1.0
+    avg_duration_ms: float = 0.0
+    max_duration_ms: int = 0
+    min_duration_ms: int = 0
+    last_run_at_ms: int | None = None
+    last_status: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "total_runs": self.total_runs,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count,
+            "success_rate": self.success_rate,
+            "avg_duration_ms": self.avg_duration_ms,
+            "max_duration_ms": self.max_duration_ms,
+            "min_duration_ms": self.min_duration_ms,
+            "last_run_at_ms": self.last_run_at_ms,
+            "last_status": self.last_status,
+        }
+
+
+@dataclass
+class SchedulerStats:
+    """Global scheduler statistics."""
+    running: bool = False
+    # Job counts
+    total_jobs: int = 0
+    active_jobs: int = 0
+    paused_jobs: int = 0
+    completed_jobs: int = 0
+    failed_jobs: int = 0
+    # Today's run stats
+    total_runs_today: int = 0
+    success_runs_today: int = 0
+    failed_runs_today: int = 0
+    success_rate_today: float = 0.0
+    avg_duration_ms_today: float = 0.0
+    # Next scheduled run
+    next_run_at_ms: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "running": self.running,
+            "jobs": {
+                "total": self.total_jobs,
+                "active": self.active_jobs,
+                "paused": self.paused_jobs,
+                "completed": self.completed_jobs,
+                "failed": self.failed_jobs,
+            },
+            "runs_today": {
+                "total": self.total_runs_today,
+                "success": self.success_runs_today,
+                "failed": self.failed_runs_today,
+                "success_rate": self.success_rate_today,
+            },
+            "avg_duration_ms": self.avg_duration_ms_today,
+            "next_run_at_ms": self.next_run_at_ms,
+        }
+
+
+@dataclass
+class BatchResult:
+    """Result of a batch operation."""
+    success: bool
+    processed: int = 0
+    failed_ids: list[str] = field(default_factory=list)
+    errors: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "success": self.success,
+            "processed": self.processed,
+            "failed_ids": self.failed_ids,
+            "errors": self.errors,
+        }

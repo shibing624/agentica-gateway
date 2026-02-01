@@ -33,6 +33,11 @@ from .types import (
     RunResult,
     RemoveResult,
     SchedulerStatus,
+    # Monitoring types
+    JobRun,
+    JobStats,
+    SchedulerStats,
+    BatchResult,
 )
 
 # Models
@@ -114,6 +119,11 @@ __all__ = [
     "RunResult",
     "RemoveResult",
     "SchedulerStatus",
+    # Monitoring types
+    "JobRun",
+    "JobStats",
+    "SchedulerStats",
+    "BatchResult",
     # Models
     "ScheduledJob",
     "JobState",

@@ -4,11 +4,12 @@ Handles scheduling wake-ups and running due jobs.
 """
 import asyncio
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from loguru import logger
 
 from ..schedule import compute_next_run_at_ms, now_ms
-from ..types import JobStatus, RunStatus, RunResult
+from ..types import JobStatus, RunStatus, RunResult, JobRun
 from .events import emit_job_event, EventTypes
 
 if TYPE_CHECKING:
@@ -183,6 +184,14 @@ async def run_single_job(
     # Emit before run event
     emit_job_event(service.events, EventTypes.JOB_STARTED, job_id)
 
+    # Create run record
+    run = JobRun(
+        id=f"run_{uuid4().hex[:12]}",
+        job_id=job_id,
+        started_at_ms=started_at_ms,
+        status=RunStatus.OK,
+    )
+
     try:
         # Execute the job
         result = None
@@ -208,6 +217,14 @@ async def run_single_job(
         # Save updated state
         await service.store.save(job)
 
+        # Update and save run record
+        finished_at_ms = now_ms()
+        run.finished_at_ms = finished_at_ms
+        run.duration_ms = finished_at_ms - started_at_ms
+        run.status = RunStatus.OK
+        run.result = str(result)[:1000] if result else None
+        await service.store.save_run(run)
+
         # Emit completion event
         emit_job_event(
             service.events,
@@ -219,7 +236,6 @@ async def run_single_job(
         # Trigger task chains
         await trigger_chains(service, job, RunStatus.OK)
 
-        finished_at_ms = now_ms()
         return RunResult(
             job_id=job_id,
             status=RunStatus.OK,
@@ -250,6 +266,14 @@ async def run_single_job(
 
         await service.store.save(job)
 
+        # Update and save run record
+        finished_at_ms = now_ms()
+        run.finished_at_ms = finished_at_ms
+        run.duration_ms = finished_at_ms - started_at_ms
+        run.status = RunStatus.FAILED
+        run.error = error_msg[:1000]
+        await service.store.save_run(run)
+
         # Emit failure event
         emit_job_event(
             service.events,
@@ -261,7 +285,6 @@ async def run_single_job(
         # Trigger failure chains
         await trigger_chains(service, job, RunStatus.FAILED)
 
-        finished_at_ms = now_ms()
         return RunResult(
             job_id=job_id,
             status=RunStatus.FAILED,

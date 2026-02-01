@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import aiosqlite
 from loguru import logger
@@ -13,6 +14,9 @@ from loguru import logger
 from ..models import ScheduledJob, JobState
 from ..types import (
     JobStatus,
+    RunStatus,
+    JobRun,
+    JobStats,
     schedule_from_dict,
     payload_from_dict,
     TaskChainPayload,
@@ -72,6 +76,42 @@ class JobStore:
 
         await self._connection.commit()
         logger.info(f"Job store initialized at {self.db_path}")
+
+        # Initialize runs table
+        await self._init_runs_table()
+
+    async def _init_runs_table(self) -> None:
+        """Initialize the job_runs table for execution history."""
+        if not self._connection:
+            return
+
+        # Create job_runs table
+        await self._connection.execute("""
+            CREATE TABLE IF NOT EXISTS job_runs (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                started_at_ms INTEGER NOT NULL,
+                finished_at_ms INTEGER,
+                status TEXT NOT NULL DEFAULT 'ok',
+                result TEXT,
+                error TEXT,
+                duration_ms INTEGER DEFAULT 0,
+                FOREIGN KEY (job_id) REFERENCES scheduled_jobs(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Create indexes for job_runs
+        await self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_job_id ON job_runs(job_id)"
+        )
+        await self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_started_at ON job_runs(started_at_ms)"
+        )
+        await self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_status ON job_runs(status)"
+        )
+
+        await self._connection.commit()
 
     async def close(self) -> None:
         """Close database connection."""
@@ -279,3 +319,288 @@ class JobStore:
         )
 
         return job
+
+    # ============== Job Runs (Execution History) ==============
+
+    async def save_run(self, run: JobRun) -> None:
+        """Save a job run record."""
+        if not self._connection:
+            raise RuntimeError("JobStore not initialized")
+
+        # Generate ID if not set
+        if not run.id:
+            run.id = f"run_{uuid4().hex[:12]}"
+
+        await self._connection.execute(
+            """
+            INSERT OR REPLACE INTO job_runs (
+                id, job_id, started_at_ms, finished_at_ms,
+                status, result, error, duration_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run.id,
+                run.job_id,
+                run.started_at_ms,
+                run.finished_at_ms,
+                run.status.value,
+                run.result,
+                run.error,
+                run.duration_ms,
+            ),
+        )
+        await self._connection.commit()
+
+    async def get_runs(
+        self,
+        job_id: str | None = None,
+        status: RunStatus | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[JobRun], int]:
+        """Get job runs with filters.
+
+        Args:
+            job_id: Filter by job ID
+            status: Filter by run status
+            since_ms: Filter runs after this timestamp
+            until_ms: Filter runs before this timestamp
+            limit: Maximum number of results
+            offset: Offset for pagination
+
+        Returns:
+            Tuple of (runs list, total count)
+        """
+        if not self._connection:
+            raise RuntimeError("JobStore not initialized")
+
+        # Build query
+        where_clauses = []
+        params: list[Any] = []
+
+        if job_id:
+            where_clauses.append("job_id = ?")
+            params.append(job_id)
+
+        if status:
+            where_clauses.append("status = ?")
+            params.append(status.value)
+
+        if since_ms:
+            where_clauses.append("started_at_ms >= ?")
+            params.append(since_ms)
+
+        if until_ms:
+            where_clauses.append("started_at_ms <= ?")
+            params.append(until_ms)
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        # Get total count
+        count_query = f"SELECT COUNT(*) FROM job_runs WHERE {where_sql}"
+        async with self._connection.execute(count_query, params) as cursor:
+            row = await cursor.fetchone()
+            total = row[0] if row else 0
+
+        # Get runs
+        query = f"""
+            SELECT * FROM job_runs
+            WHERE {where_sql}
+            ORDER BY started_at_ms DESC
+            LIMIT ? OFFSET ?
+        """
+        params.extend([limit, offset])
+
+        runs = []
+        async with self._connection.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+            for row in rows:
+                data = dict(zip(columns, row))
+                runs.append(JobRun(
+                    id=data.get("id", ""),
+                    job_id=data.get("job_id", ""),
+                    started_at_ms=data.get("started_at_ms", 0),
+                    finished_at_ms=data.get("finished_at_ms"),
+                    status=RunStatus(data.get("status", "ok")),
+                    result=data.get("result"),
+                    error=data.get("error"),
+                    duration_ms=data.get("duration_ms", 0),
+                ))
+
+        return runs, total
+
+    async def get_recent_runs(
+        self,
+        limit: int = 20,
+        since_ms: int | None = None,
+    ) -> list[JobRun]:
+        """Get recent job runs across all jobs."""
+        runs, _ = await self.get_runs(since_ms=since_ms, limit=limit)
+        return runs
+
+    async def get_failed_runs(
+        self,
+        since_ms: int | None = None,
+        limit: int = 20,
+    ) -> list[JobRun]:
+        """Get failed job runs."""
+        runs, _ = await self.get_runs(
+            status=RunStatus.FAILED,
+            since_ms=since_ms,
+            limit=limit,
+        )
+        return runs
+
+    async def get_job_stats(self, job_id: str) -> JobStats:
+        """Get statistics for a single job."""
+        if not self._connection:
+            raise RuntimeError("JobStore not initialized")
+
+        stats = JobStats(job_id=job_id)
+
+        # Get counts and aggregates
+        query = """
+            SELECT
+                COUNT(*) as total_runs,
+                SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN status IN ('failed', 'timeout') THEN 1 ELSE 0 END) as failure_count,
+                AVG(duration_ms) as avg_duration,
+                MAX(duration_ms) as max_duration,
+                MIN(duration_ms) as min_duration
+            FROM job_runs
+            WHERE job_id = ?
+        """
+
+        async with self._connection.execute(query, (job_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                stats.total_runs = row[0] or 0
+                stats.success_count = row[1] or 0
+                stats.failure_count = row[2] or 0
+                stats.avg_duration_ms = float(row[3] or 0)
+                stats.max_duration_ms = row[4] or 0
+                stats.min_duration_ms = row[5] or 0
+
+                if stats.total_runs > 0:
+                    stats.success_rate = stats.success_count / stats.total_runs
+
+        # Get last run info
+        last_run_query = """
+            SELECT started_at_ms, status FROM job_runs
+            WHERE job_id = ?
+            ORDER BY started_at_ms DESC
+            LIMIT 1
+        """
+
+        async with self._connection.execute(last_run_query, (job_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                stats.last_run_at_ms = row[0]
+                stats.last_status = row[1]
+
+        return stats
+
+    async def get_runs_stats_today(self) -> dict[str, Any]:
+        """Get run statistics for today."""
+        if not self._connection:
+            raise RuntimeError("JobStore not initialized")
+
+        # Calculate start of today in ms
+        now = datetime.now()
+        start_of_day = datetime(now.year, now.month, now.day)
+        start_of_day_ms = int(start_of_day.timestamp() * 1000)
+
+        query = """
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) as success,
+                SUM(CASE WHEN status IN ('failed', 'timeout') THEN 1 ELSE 0 END) as failed,
+                AVG(duration_ms) as avg_duration
+            FROM job_runs
+            WHERE started_at_ms >= ?
+        """
+
+        async with self._connection.execute(query, (start_of_day_ms,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                total = row[0] or 0
+                success = row[1] or 0
+                failed = row[2] or 0
+                avg_duration = float(row[3] or 0)
+                success_rate = success / total if total > 0 else 0.0
+
+                return {
+                    "total": total,
+                    "success": success,
+                    "failed": failed,
+                    "success_rate": success_rate,
+                    "avg_duration_ms": avg_duration,
+                }
+
+        return {
+            "total": 0,
+            "success": 0,
+            "failed": 0,
+            "success_rate": 0.0,
+            "avg_duration_ms": 0.0,
+        }
+
+    async def delete_old_runs(self, before_ms: int) -> int:
+        """Delete runs older than the given timestamp.
+
+        Args:
+            before_ms: Delete runs started before this timestamp
+
+        Returns:
+            Number of deleted runs
+        """
+        if not self._connection:
+            raise RuntimeError("JobStore not initialized")
+
+        result = await self._connection.execute(
+            "DELETE FROM job_runs WHERE started_at_ms < ?",
+            (before_ms,)
+        )
+        await self._connection.commit()
+        return result.rowcount
+
+    async def get_upcoming_jobs(
+        self,
+        within_ms: int,
+        limit: int = 20,
+    ) -> list[ScheduledJob]:
+        """Get jobs scheduled to run within the given time window.
+
+        Args:
+            within_ms: Time window in milliseconds from now
+            limit: Maximum number of jobs to return
+
+        Returns:
+            List of upcoming jobs sorted by next_run_at_ms
+        """
+        if not self._connection:
+            raise RuntimeError("JobStore not initialized")
+
+        now_ms = int(datetime.now().timestamp() * 1000)
+        until_ms = now_ms + within_ms
+
+        query = """
+            SELECT * FROM scheduled_jobs
+            WHERE enabled = 1
+            AND status = 'active'
+            AND json_extract(state, '$.next_run_at_ms') IS NOT NULL
+            AND json_extract(state, '$.next_run_at_ms') <= ?
+            ORDER BY json_extract(state, '$.next_run_at_ms') ASC
+            LIMIT ?
+        """
+
+        jobs = []
+        async with self._connection.execute(query, (until_ms, limit)) as cursor:
+            rows = await cursor.fetchall()
+            for row in rows:
+                jobs.append(self._row_to_job(row, cursor.description))
+
+        return jobs
