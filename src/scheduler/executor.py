@@ -144,7 +144,7 @@ class JobExecutor:
         success = await self.notification_sender.send(
             channel=payload.channel,
             chat_id=payload.chat_id,
-            message=f"\u23f0 \u63d0\u9192\uff1a{message}",  # Clock emoji + "提醒："
+            message=f"⏰ 提醒：{message}",
         )
 
         return "Notification sent" if success else "Notification failed"
@@ -201,7 +201,7 @@ class JobExecutor:
         if not self.notification_sender:
             return
 
-        message = f"\u2705 \u5b9a\u65f6\u4efb\u52a1\u5b8c\u6210\n\u4efb\u52a1\uff1a{job.name}\n\u7ed3\u679c\uff1a{result[:500]}"
+        message = f"✅ 定时任务完成\n任务：{job.name}\n结果：{result[:500]}"
 
         try:
             await self.notification_sender.send(
@@ -222,7 +222,7 @@ class JobExecutor:
         if not self.notification_sender:
             return
 
-        message = f"\u274c \u5b9a\u65f6\u4efb\u52a1\u5931\u8d25\n\u4efb\u52a1\uff1a{job.name}\n\u9519\u8bef\uff1a{error[:200]}"
+        message = f"❌ 定时任务失败\n任务：{job.name}\n错误：{error[:200]}"
 
         try:
             await self.notification_sender.send(

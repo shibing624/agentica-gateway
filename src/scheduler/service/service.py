@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional, List
 
 from loguru import logger
 
@@ -245,7 +245,7 @@ class SchedulerService:
         self,
         job_id: str,
         next_job_id: str,
-        on_status: list[str] | None = None,
+        on_status: Optional[List[str]] = None,
     ) -> ScheduledJob | None:
         """Chain two jobs together.
 

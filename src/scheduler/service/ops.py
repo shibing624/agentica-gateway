@@ -3,6 +3,7 @@
 Contains the main business logic for job management.
 """
 from datetime import datetime
+from typing import Optional, List
 
 from loguru import logger
 
@@ -232,7 +233,7 @@ async def chain_jobs(
     events: EventEmitter,
     job_id: str,
     next_job_id: str,
-    on_status: list[str] | None = None,
+    on_status: Optional[List[str]] = None,
 ) -> ScheduledJob | None:
     """Chain two jobs together.
 

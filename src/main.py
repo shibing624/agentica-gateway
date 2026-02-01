@@ -29,7 +29,7 @@ scheduler: Optional[SchedulerService] = None
 # ============== Agent Runner for Scheduler ==============
 
 class DaemonAgentRunner:
-    """Agent runner that uses the daemon's AgentService."""
+    """Agent runner that uses the daemon's AgentService for scheduled jobs."""
 
     def __init__(self, agent_svc: AgentService):
         self.agent_service = agent_svc
@@ -39,12 +39,24 @@ class DaemonAgentRunner:
         prompt: str,
         context: dict[str, Any] | None = None,
     ) -> str:
-        """Run agent with a prompt and return the result."""
-        session_id = f"scheduled_{context.get('job_id', 'default')}" if context else "scheduled_default"
+        """Run agent with a prompt and return the result.
+
+        Args:
+            prompt: The prompt to execute
+            context: Context including job_id, user_id, etc.
+
+        Returns:
+            Agent response content
+        """
+        context = context or {}
+        job_id = context.get('job_id', 'default')
+        user_id = context.get('user_id', '')
+        session_id = f"scheduled_{job_id}"
 
         result = await self.agent_service.chat(
             message=prompt,
             session_id=session_id,
+            user_id=user_id,
         )
 
         return result.content

@@ -3,7 +3,7 @@
 These tools are designed to be used by an AI agent to handle natural language
 requests for scheduled tasks.
 """
-from typing import Any
+from typing import Any, Optional, List
 
 from .models import JobCreate
 from .types import (
@@ -62,9 +62,9 @@ CREATE_SCHEDULED_JOB_TOOL = {
             },
             "notify_channel": {
                 "type": "string",
-                "description": "通知渠道：telegram, discord, slack, webhook",
-                "enum": ["telegram", "discord", "slack", "webhook"],
-                "default": "telegram"
+                "description": "通知渠道：feishu, telegram, discord, slack, webhook, gradio",
+                "enum": ["feishu", "telegram", "discord", "slack", "webhook", "gradio"],
+                "default": "feishu"
             },
             "notify_chat_id": {
                 "type": "string",
@@ -515,7 +515,7 @@ async def create_task_chain_tool(
     source_job_id: str,
     target_job_id: str,
     user_id: str,
-    on_status: list[str] | None = None,
+    on_status: Optional[List[str]] = None,
 ) -> dict[str, Any]:
     """Tool implementation: Create a task chain.
 
@@ -588,18 +588,6 @@ async def create_task_chain_tool(
         }
 
 
-# ============== Legacy Compatibility ==============
-# Keep old tool names as aliases
-
-CREATE_SCHEDULED_TASK_TOOL = CREATE_SCHEDULED_JOB_TOOL
-LIST_SCHEDULED_TASKS_TOOL = LIST_SCHEDULED_JOBS_TOOL
-DELETE_SCHEDULED_TASK_TOOL = DELETE_SCHEDULED_JOB_TOOL
-
-create_scheduled_task_tool = create_scheduled_job_tool
-list_scheduled_tasks_tool = list_scheduled_jobs_tool
-delete_scheduled_task_tool = delete_scheduled_job_tool
-
-
 # Export all tools as a list for easy registration
 ALL_SCHEDULER_TOOLS = [
     CREATE_SCHEDULED_JOB_TOOL,
@@ -618,8 +606,4 @@ TOOL_IMPLEMENTATIONS = {
     "pause_scheduled_job": pause_scheduled_job_tool,
     "resume_scheduled_job": resume_scheduled_job_tool,
     "create_task_chain": create_task_chain_tool,
-    # Legacy names
-    "create_scheduled_task": create_scheduled_task_tool,
-    "list_scheduled_tasks": list_scheduled_tasks_tool,
-    "delete_scheduled_task": delete_scheduled_task_tool,
 }

@@ -90,13 +90,6 @@ from .tools import (
     pause_scheduled_job_tool,
     resume_scheduled_job_tool,
     create_task_chain_tool,
-    # Legacy aliases
-    CREATE_SCHEDULED_TASK_TOOL,
-    LIST_SCHEDULED_TASKS_TOOL,
-    DELETE_SCHEDULED_TASK_TOOL,
-    create_scheduled_task_tool,
-    list_scheduled_tasks_tool,
-    delete_scheduled_task_tool,
 )
 
 __all__ = [
@@ -161,11 +154,4 @@ __all__ = [
     "pause_scheduled_job_tool",
     "resume_scheduled_job_tool",
     "create_task_chain_tool",
-    # Legacy aliases
-    "CREATE_SCHEDULED_TASK_TOOL",
-    "LIST_SCHEDULED_TASKS_TOOL",
-    "DELETE_SCHEDULED_TASK_TOOL",
-    "create_scheduled_task_tool",
-    "list_scheduled_tasks_tool",
-    "delete_scheduled_task_tool",
 ]
