@@ -2,7 +2,7 @@
 
 Agentica Gateway 服务，调用 [agentica](https://github.com/shibing624/agentica) SDK。
 
-支持Lark(飞书)、WeCom(企微)、Telegram、Discord、Gradio 等多渠道接入的 AI Agent 网关。
+支持Lark/Feishu(飞书)、WeCom(企微)、Telegram、Discord、Gradio 等多渠道接入的 AI Agent 网关。
 
 ## 特性
 
@@ -64,7 +64,7 @@ PORT=8789
 
 # 模型配置
 MODEL_PROVIDER=zhipuai   # zhipuai / openai / deepseek
-MODEL_NAME=glm-4.7-flash
+MODEL_NAME=glm-4.7-flash # glm-4.7-flash is free
 
 # Gradio WebUI
 GRADIO_ENABLED=true
@@ -121,52 +121,69 @@ ws://localhost:8789/ws
 ← {"type":"res","id":"2","ok":true,"payload":{"content":"你好！"}}
 ```
 
-## 目录结构
-
-```
-agentica-gateway/
-├── src/
-│   ├── __init__.py
-│   ├── main.py              # FastAPI 主入口
-│   ├── config.py            # 配置管理
-│   │
-│   ├── services/            # 服务层
-│   │   ├── agent_service.py # Agent 服务封装
-│   │   ├── channel_manager.py
-│   │   ├── router.py        # 消息路由
-│   │   └── scheduler.py     # 定时任务
-│   │
-│   └── channels/            # 渠道实现
-│       ├── base.py          # 抽象基类
-│       ├── gr.py            # Gradio WebUI
-│       ├── feishu.py        # 飞书
-│       ├── telegram.py      # Telegram
-│       └── discord.py       # Discord
-│
-├── pyproject.toml
-├── requirements.txt
-└── .env.example
-```
 
 ## 飞书机器人配置
 
-1. 在 [飞书开放平台](https://open.feishu.cn) 创建应用
-2. 事件与回调 → 订阅方式改为「使用长连接接收事件」
-3. 添加事件：`im.message.receive_v1`
-4. 权限管理 → 添加 `im:message`、`im:message:send_as_bot`
 
-## 对比 OpenClaw
+### 配置
 
-| 功能 | agentica-gateway | OpenClaw |
-|------|------------------|----------|
-| 语言 | Python | TypeScript |
-| Agent SDK | agentica | 自实现 |
-| Gateway | FastAPI + WebSocket | Express + WebSocket |
-| 渠道 | Gradio/飞书/Telegram/Discord | Telegram/Discord/Slack |
-| 消息路由 | ✅ | ✅ |
-| 流式输出 | ✅ | ✅ |
-| 定时任务 | APScheduler | node-cron |
+1. 在 [飞书开放平台](https://open.feishu.cn) 创建自建应用
+2. 在凭证页面获取 App ID 和 App Secret
+3. 开启所需权限（见下方）
+4. **配置事件订阅**（见下方）⚠️ 重要
+5. 配置插件：
+
+#### 必需权限
+
+| 权限 | 范围 | 说明 |
+|------|------|------|
+| `contact:user.base:readonly` | 用户信息 | 获取用户基本信息（用于解析发送者姓名，避免群聊/私聊把不同人当成同一说话者） |
+| `im:message` | 消息 | 发送和接收消息 |
+| `im:message.p2p_msg:readonly` | 私聊 | 读取发给机器人的私聊消息 |
+| `im:message.group_at_msg:readonly` | 群聊 | 接收群内 @机器人 的消息 |
+| `im:message:send_as_bot` | 发送 | 以机器人身份发送消息 |
+| `im:resource` | 媒体 | 上传和下载图片/文件 |
+
+#### 可选权限
+
+| 权限 | 范围 | 说明 |
+|------|------|------|
+| `im:message.group_msg` | 群聊 | 读取所有群消息（敏感） |
+| `im:message:readonly` | 读取 | 获取历史消息 |
+| `im:message:update` | 编辑 | 更新/编辑已发送消息 |
+| `im:message:recall` | 撤回 | 撤回已发送消息 |
+| `im:message.reactions:read` | 表情 | 查看消息表情回复 |
+
+#### 文档工具权限
+
+使用飞书文档工具（`feishu_doc_*`）需要以下权限：
+
+| 权限 | 说明 |
+|------|------|
+| `docx:document` | 创建/编辑文档 |
+| `docx:document:readonly` | 读取文档 |
+| `docx:document.block:convert` | Markdown 转 blocks（write/append 必需） |
+| `drive:drive` | 上传图片到文档 |
+| `drive:drive:readonly` | 列出文件夹 |
+
+#### 事件订阅 ⚠️
+
+> **这是最容易遗漏的配置！** 如果机器人能发消息但收不到消息，请检查此项。
+
+在飞书开放平台的应用后台，进入 **事件与回调** 页面：
+
+1. **事件配置方式**：选择 **使用长连接接收事件**（推荐）
+2. **添加事件订阅**，勾选以下事件：
+
+| 事件 | 说明 |
+|------|------|
+| `im.message.receive_v1` | 接收消息（必需） |
+| `im.message.message_read_v1` | 消息已读回执 |
+| `im.chat.member.bot.added_v1` | 机器人进群 |
+| `im.chat.member.bot.deleted_v1` | 机器人被移出群 |
+
+3. 确保事件订阅的权限已申请并通过审核
 
 ## License
 
-MIT
+Apache-2.0
