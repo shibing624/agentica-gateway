@@ -139,6 +139,7 @@ class AgentService:
                 instructions=instructions if instructions else None,
                 add_datetime_to_instructions=True,
                 auto_load_mcp=True,
+                run_timeout=600,
                 # 调试
                 debug_mode=settings.debug,
             )
@@ -157,7 +158,7 @@ class AgentService:
 
     def _create_model(self) -> Any:
         """创建模型实例"""
-        params = {"id": self.model_name}
+        params = {"id": self.model_name, "timeout": 300}
 
         if self.model_provider == "zhipuai":
             from agentica import ZhipuAI
