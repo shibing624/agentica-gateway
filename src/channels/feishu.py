@@ -197,8 +197,11 @@ class FeishuChannel(Channel):
             if not text:
                 return
 
-            user_id = sender.sender_id.user_id if sender.sender_id else ""
+            user_id = sender.sender_id.user_id if sender.sender_id else "feishu_user"
             open_id = sender.sender_id.open_id if sender.sender_id else ""
+
+            # 记录用户消息日志
+            logger.debug(f"[feishu] {user_id}: {text[:100]}")
 
             # 白名单检查
             if self.allowed_users and user_id not in self.allowed_users:
