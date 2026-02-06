@@ -1,14 +1,18 @@
 """Main Scheduler Service class.
 
 This is the unified entry point for all scheduler operations.
+Supports:
+- Session target modes (main/isolated)
+- Dependency injection callbacks
+- JSON file export for human-readable viewing
 """
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, List
-from copy import deepcopy
+from typing import Any, Awaitable, Callable, Optional, List
 
 from loguru import logger
 
@@ -23,6 +27,7 @@ from ..types import (
     JobRun,
     JobStats,
     BatchResult,
+    SessionTarget,
 )
 from .state import SchedulerServiceDeps, SchedulerServiceState
 from .store import JobStore
@@ -32,37 +37,65 @@ from . import timer
 
 logger = logger.bind(module="scheduler.service")
 
+# Type aliases for dependency injection callbacks
+OnSystemEventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
+RunHeartbeatCallback = Callable[[str], Awaitable[None]]
+ReportToMainCallback = Callable[[str, str, str], Awaitable[None]]
+
 
 class SchedulerService:
     """Unified scheduler service for managing scheduled jobs.
 
     This replaces both the legacy Scheduler class and the APScheduler-based
     SchedulerService with a simpler asyncio-based implementation.
+    
+    Supports:
+    - Session target modes (main/isolated)
+    - Dependency injection for main mode callbacks
+    - JSON file export for human-readable viewing
     """
 
     def __init__(
         self,
         db_path: str | Path = "~/.agentica/scheduler.db",
+        json_path: str | Path | None = None,
         executor: Any = None,
         notification_sender: Any = None,
+        # Dependency injection callbacks for main mode
+        on_system_event: OnSystemEventCallback | None = None,
+        run_heartbeat: RunHeartbeatCallback | None = None,
+        report_to_main: ReportToMainCallback | None = None,
+        # Auto export to JSON after changes
+        auto_export_json: bool = True,
     ):
         """Initialize scheduler service.
 
         Args:
             db_path: Path to SQLite database for persistence
+            json_path: Path to JSON file for human-readable export
             executor: Job executor (implements execute(job) -> Any)
             notification_sender: Notification sender (implements send(channel, chat_id, msg) -> bool)
+            on_system_event: Callback to inject system event into main session
+            run_heartbeat: Callback to trigger heartbeat in main session
+            report_to_main: Callback to report isolated execution result to main session
+            auto_export_json: Whether to auto-export to JSON after job changes
         """
         db_path = Path(db_path).expanduser()
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.store = JobStore(db_path)
+        self.store = JobStore(db_path, json_path)
         self.events = EventEmitter()
         self.deps = SchedulerServiceDeps(
             executor=executor,
             notification_sender=notification_sender,
         )
         self.state = SchedulerServiceState()
+        
+        # Main mode callbacks
+        self.on_system_event = on_system_event
+        self.run_heartbeat = run_heartbeat
+        self.report_to_main = report_to_main
+        self.auto_export_json = auto_export_json
 
     async def start(self) -> None:
         """Start the scheduler service."""
@@ -82,6 +115,10 @@ class SchedulerService:
 
         # Arm timer for first wake
         await timer.arm_timer(self)
+        
+        # Initial JSON export
+        if self.auto_export_json:
+            await self.store.export_to_json()
 
         emit_job_event(self.events, EventTypes.SCHEDULER_STARTED, "")
         logger.info("Scheduler service started")
@@ -100,6 +137,10 @@ class SchedulerService:
                 await self.state.timer_task
             except asyncio.CancelledError:
                 pass
+
+        # Final JSON export
+        if self.auto_export_json:
+            await self.store.export_to_json()
 
         # Close store
         await self.store.close()
@@ -133,6 +174,10 @@ class SchedulerService:
         # Re-arm timer if needed
         if self.state.running:
             await timer.arm_timer(self)
+        
+        # Export to JSON
+        if self.auto_export_json:
+            await self.store.export_to_json()
 
         return created_job
 
@@ -151,6 +196,10 @@ class SchedulerService:
         # Re-arm timer if schedule changed
         if updated_job and self.state.running and patch.schedule is not None:
             await timer.arm_timer(self)
+        
+        # Export to JSON
+        if updated_job and self.auto_export_json:
+            await self.store.export_to_json()
 
         return updated_job
 
@@ -167,6 +216,10 @@ class SchedulerService:
 
         if result.removed and self.state.running:
             await timer.arm_timer(self)
+        
+        # Export to JSON
+        if result.removed and self.auto_export_json:
+            await self.store.export_to_json()
 
         return result
 
@@ -563,3 +616,41 @@ class SchedulerService:
             RunResult from the execution
         """
         return await self.run(job_id, mode="force")
+
+    # ============== JSON Export ==============
+
+    async def export_to_json(self) -> Path:
+        """Export all jobs to JSON file for human-readable viewing.
+
+        Returns:
+            Path to the exported JSON file
+        """
+        await self.store.export_to_json()
+        return await self.store.get_json_path()
+
+    async def import_from_json(self, json_path: str | Path | None = None) -> int:
+        """Import jobs from JSON file.
+
+        Args:
+            json_path: Path to JSON file, defaults to configured path
+
+        Returns:
+            Number of jobs imported
+        """
+        count = await self.store.import_from_json(json_path)
+        
+        # Re-arm timer after import
+        if self.state.running and count > 0:
+            await self._activate_jobs()
+            await timer.arm_timer(self)
+        
+        return count
+
+    async def get_json_path(self) -> Path:
+        """Get the path to the JSON export file.
+
+        Returns:
+            Path to JSON file
+        """
+        return await self.store.get_json_path()
+

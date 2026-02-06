@@ -11,6 +11,44 @@ from enum import Enum
 from typing import Any, Literal
 
 
+# ============== Session Target ==============
+
+class SessionTargetKind(str, Enum):
+    """Kind of session target for job execution."""
+    MAIN = "main"           # Inject into user's main session, trigger heartbeat
+    ISOLATED = "isolated"   # Run in isolated agent session
+
+
+@dataclass
+class SessionTarget:
+    """Target session for job execution.
+    
+    - main: Inject systemEvent into user's active main session, trigger heartbeat
+    - isolated: Start independent Agent session, report result back to main session
+    """
+    kind: SessionTargetKind = SessionTargetKind.ISOLATED
+    # For main mode: whether to trigger heartbeat after injection
+    trigger_heartbeat: bool = True
+    # For isolated mode: whether to report result to main session
+    report_to_main: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind.value,
+            "trigger_heartbeat": self.trigger_heartbeat,
+            "report_to_main": self.report_to_main,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SessionTarget":
+        kind_str = data.get("kind", "isolated")
+        return cls(
+            kind=SessionTargetKind(kind_str),
+            trigger_heartbeat=data.get("trigger_heartbeat", True),
+            report_to_main=data.get("report_to_main", True),
+        )
+
+
 # ============== Schedule Types ==============
 
 class ScheduleKind(str, Enum):

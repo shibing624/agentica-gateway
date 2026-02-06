@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  agentica-gateway:
+    build: .
+    container_name: agentica-gateway
+    ports:
+      - "8789:8789"
+      - "7863:7863"
+    env_file:
+      - .env
+    volumes:
+      - ./workspace:/app/workspace
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8789/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

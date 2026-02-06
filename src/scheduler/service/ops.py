@@ -47,6 +47,7 @@ async def add_job(
         enabled=job_create.enabled,
         schedule=job_create.schedule,
         payload=job_create.payload,
+        target=job_create.target,
         max_retries=job_create.max_retries,
     )
 

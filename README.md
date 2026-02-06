@@ -84,12 +84,38 @@ DISCORD_BOT_TOKEN=xxx
 
 ## 启动
 
-```bash
-# 开发模式
-uvicorn src.main:app --reload --port 8789
+### 开发模式
 
-# 生产模式
+```bash
+uvicorn src.main:app --reload --port 8789
+```
+
+### 生产模式
+
+#### 方式一：Gunicorn + Uvicorn（推荐）
+
+```bash
+# 安装 gunicorn
+pip install gunicorn
+
+# 启动（4 个 worker 进程）
+gunicorn src.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8789
+```
+
+#### 方式二：直接运行
+
+```bash
 agentica-gateway
+```
+
+#### 方式三：Docker Compose
+
+```bash
+# 构建并启动
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
 ```
 
 ## API

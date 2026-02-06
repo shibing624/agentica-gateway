@@ -196,7 +196,11 @@ async def run_single_job(
         # Execute the job
         result = None
         if service.deps.executor:
-            result = await service.deps.executor.execute(job)
+            # Support both callable and object with execute method
+            if callable(service.deps.executor):
+                result = await service.deps.executor(job)
+            else:
+                result = await service.deps.executor.execute(job)
 
         # Update job state
         job.state.last_run_at_ms = now_ms()

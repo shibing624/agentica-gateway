@@ -1,9 +1,12 @@
 """Task executor for running scheduled agent tasks.
 
-Refactored to work with the new ScheduledJob model and support task chains.
+Refactored to work with the new ScheduledJob model and support:
+- Session target modes (main/isolated)
+- Dependency injection callbacks (on_system_event, run_heartbeat)
+- Task chains
 """
 from datetime import datetime
-from typing import Any, Protocol, cast
+from typing import Any, Awaitable, Callable, Protocol, cast
 
 from loguru import logger
 
@@ -13,13 +16,17 @@ from .types import (
     SystemEventPayload,
     WebhookPayload,
     PayloadKind,
+    SessionTarget,
+    SessionTargetKind,
 )
 
 logger = logger.bind(module="scheduler.executor")
 
 
+# ============== Protocol Definitions ==============
+
 class AgentRunner(Protocol):
-    """Protocol for agent execution."""
+    """Protocol for agent execution (isolated mode)."""
 
     async def run(
         self,
@@ -43,8 +50,18 @@ class NotificationSender(Protocol):
         ...
 
 
+# Type aliases for dependency injection callbacks
+OnSystemEventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
+RunHeartbeatCallback = Callable[[str], Awaitable[None]]
+ReportToMainCallback = Callable[[str, str, str], Awaitable[None]]
+
+
 class JobExecutor:
     """Executes scheduled jobs by running agents or sending notifications.
+
+    Supports two execution modes:
+    - main: Inject systemEvent into user's main session, trigger heartbeat
+    - isolated: Run in independent agent session, report result back
 
     This is the bridge between the scheduler and your agent system.
     """
@@ -53,46 +70,51 @@ class JobExecutor:
         self,
         agent_runner: AgentRunner | None = None,
         notification_sender: NotificationSender | None = None,
+        # Dependency injection callbacks for main mode
+        on_system_event: OnSystemEventCallback | None = None,
+        run_heartbeat: RunHeartbeatCallback | None = None,
+        report_to_main: ReportToMainCallback | None = None,
     ):
-        """Initialize executor with agent runner and notification sender.
+        """Initialize executor with runners and callbacks.
 
         Args:
-            agent_runner: Implementation for running agent tasks
+            agent_runner: Implementation for running agent tasks (isolated mode)
             notification_sender: Implementation for sending notifications
+            on_system_event: Callback to inject system event into main session
+            run_heartbeat: Callback to trigger heartbeat in main session
+            report_to_main: Callback to report isolated execution result to main session
         """
         self.agent_runner = agent_runner
         self.notification_sender = notification_sender
+        self.on_system_event = on_system_event
+        self.run_heartbeat = run_heartbeat
+        self.report_to_main = report_to_main
 
-    async def execute(self, job: ScheduledJob) -> str:
+    async def execute(
+        self,
+        job: ScheduledJob,
+        target: SessionTarget | None = None,
+    ) -> str:
         """Execute a scheduled job.
 
         Args:
             job: The job to execute
+            target: Session target (main/isolated), defaults to isolated
 
         Returns:
             Execution result message
         """
         logger.info(f"Executing job {job.id}: {job.name}")
+        target = target or SessionTarget()
 
         try:
             result = ""
 
-            # Dispatch based on payload type
-            payload = job.payload
-            payload_kind = payload.kind if hasattr(payload, "kind") else "agent_turn"
-
-            if payload_kind == PayloadKind.AGENT_TURN.value or isinstance(payload, AgentTurnPayload):
-                result = await self._execute_agent_task(job, cast(AgentTurnPayload, payload))
-            elif payload_kind == PayloadKind.SYSTEM_EVENT.value or isinstance(payload, SystemEventPayload):
-                result = await self._execute_notification(job, cast(SystemEventPayload, payload))
-            elif payload_kind == PayloadKind.WEBHOOK.value or isinstance(payload, WebhookPayload):
-                result = await self._execute_webhook(job, cast(WebhookPayload, payload))
+            # Dispatch based on target mode
+            if target.kind == SessionTargetKind.MAIN:
+                result = await self._execute_main_mode(job, target)
             else:
-                result = f"Unknown payload type: {payload_kind}"
-
-            # Send result notification if configured
-            if isinstance(payload, AgentTurnPayload) and payload.notify_chat_id:
-                await self._send_result_notification(job, payload, result)
+                result = await self._execute_isolated_mode(job, target)
 
             return result
 
@@ -105,6 +127,70 @@ class JobExecutor:
                 await self._send_error_notification(job, job.payload, str(e))
 
             raise
+
+    async def _execute_main_mode(
+        self,
+        job: ScheduledJob,
+        target: SessionTarget,
+    ) -> str:
+        """Execute job in main session mode.
+        
+        Injects systemEvent into user's active main session and triggers heartbeat.
+        """
+        if not self.on_system_event:
+            raise RuntimeError("on_system_event callback not configured for main mode")
+
+        # Build system event payload
+        event_data = {
+            "type": "scheduled_task",
+            "job_id": job.id,
+            "job_name": job.name,
+            "payload": job.payload.to_dict(),
+            "timestamp_ms": int(datetime.now().timestamp() * 1000),
+        }
+
+        # Inject system event into main session
+        await self.on_system_event(job.user_id, event_data)
+        logger.info(f"Injected system event for job {job.id} to user {job.user_id}")
+
+        # Trigger heartbeat if configured
+        if target.trigger_heartbeat and self.run_heartbeat:
+            await self.run_heartbeat(job.user_id)
+            logger.info(f"Triggered heartbeat for user {job.user_id}")
+
+        return "Injected to main session"
+
+    async def _execute_isolated_mode(
+        self,
+        job: ScheduledJob,
+        target: SessionTarget,
+    ) -> str:
+        """Execute job in isolated agent session mode."""
+        result = ""
+
+        # Dispatch based on payload type
+        payload = job.payload
+        payload_kind = payload.kind if hasattr(payload, "kind") else "agent_turn"
+
+        if payload_kind == PayloadKind.AGENT_TURN.value or isinstance(payload, AgentTurnPayload):
+            result = await self._execute_agent_task(job, cast(AgentTurnPayload, payload))
+        elif payload_kind == PayloadKind.SYSTEM_EVENT.value or isinstance(payload, SystemEventPayload):
+            result = await self._execute_notification(job, cast(SystemEventPayload, payload))
+        elif payload_kind == PayloadKind.WEBHOOK.value or isinstance(payload, WebhookPayload):
+            result = await self._execute_webhook(job, cast(WebhookPayload, payload))
+        else:
+            result = f"Unknown payload type: {payload_kind}"
+
+        # Report result to main session if configured
+        if target.report_to_main and self.report_to_main:
+            await self.report_to_main(job.user_id, job.id, result)
+            logger.info(f"Reported result to main session for user {job.user_id}")
+
+        # Send result notification if configured
+        if isinstance(payload, AgentTurnPayload) and payload.notify_chat_id:
+            await self._send_result_notification(job, payload, result)
+
+        return result
 
     async def _execute_agent_task(
         self,

@@ -1,6 +1,7 @@
 """SQLite persistence layer for scheduled jobs.
 
 Refactored from task_store.py to work with the new ScheduledJob model.
+Also provides JSON file export for human-readable viewing.
 """
 import json
 from datetime import datetime
@@ -26,15 +27,21 @@ logger = logger.bind(module="scheduler.store")
 
 
 class JobStore:
-    """SQLite-based job persistence."""
+    """SQLite-based job persistence with JSON export support.
+    
+    Provides both SQLite storage (for reliability) and JSON file export
+    (for human-readable viewing and debugging).
+    """
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, json_path: str | Path | None = None):
         """Initialize job store.
 
         Args:
             db_path: Path to SQLite database
+            json_path: Optional path to JSON file for human-readable export
         """
         self.db_path = Path(db_path)
+        self.json_path = Path(json_path) if json_path else self.db_path.with_suffix(".json")
         self._connection: aiosqlite.Connection | None = None
 
     async def initialize(self) -> None:
@@ -319,6 +326,107 @@ class JobStore:
         )
 
         return job
+
+    # ============== JSON File Export ==============
+
+    async def export_to_json(self) -> None:
+        """Export all jobs to JSON file for human-readable viewing."""
+        if not self._connection:
+            raise RuntimeError("JobStore not initialized")
+
+        try:
+            # Get all jobs
+            jobs = await self.list_jobs(include_disabled=True, limit=10000)
+            
+            # Get recent runs
+            recent_runs, _ = await self.get_runs(limit=100)
+            
+            # Build export data
+            export_data = {
+                "exported_at": datetime.now().isoformat(),
+                "total_jobs": len(jobs),
+                "jobs": [self._job_to_export_dict(job) for job in jobs],
+                "recent_runs": [run.to_dict() for run in recent_runs],
+            }
+
+            # Write to JSON file
+            self.json_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.json_path, "w", encoding="utf-8") as f:
+                json.dump(export_data, f, ensure_ascii=False, indent=2)
+
+            logger.debug(f"Exported {len(jobs)} jobs to {self.json_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to export to JSON: {e}")
+
+    def _job_to_export_dict(self, job: ScheduledJob) -> dict[str, Any]:
+        """Convert job to human-readable export format."""
+        data = job.to_dict()
+        
+        # Add human-readable timestamps
+        data["created_at_human"] = datetime.fromtimestamp(
+            job.created_at_ms / 1000
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        data["updated_at_human"] = datetime.fromtimestamp(
+            job.updated_at_ms / 1000
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        
+        if job.state.next_run_at_ms:
+            data["next_run_at_human"] = datetime.fromtimestamp(
+                job.state.next_run_at_ms / 1000
+            ).strftime("%Y-%m-%d %H:%M:%S")
+        
+        if job.state.last_run_at_ms:
+            data["last_run_at_human"] = datetime.fromtimestamp(
+                job.state.last_run_at_ms / 1000
+            ).strftime("%Y-%m-%d %H:%M:%S")
+
+        return data
+
+    async def import_from_json(self, json_path: str | Path | None = None) -> int:
+        """Import jobs from JSON file.
+        
+        Args:
+            json_path: Path to JSON file, defaults to self.json_path
+            
+        Returns:
+            Number of jobs imported
+        """
+        if not self._connection:
+            raise RuntimeError("JobStore not initialized")
+
+        path = Path(json_path) if json_path else self.json_path
+        if not path.exists():
+            logger.warning(f"JSON file not found: {path}")
+            return 0
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            jobs_data = data.get("jobs", [])
+            imported = 0
+
+            for job_data in jobs_data:
+                # Remove human-readable fields
+                for key in ["created_at_human", "updated_at_human", 
+                           "next_run_at_human", "last_run_at_human"]:
+                    job_data.pop(key, None)
+                
+                job = ScheduledJob.from_dict(job_data)
+                await self.save(job)
+                imported += 1
+
+            logger.info(f"Imported {imported} jobs from {path}")
+            return imported
+
+        except Exception as e:
+            logger.error(f"Failed to import from JSON: {e}")
+            return 0
+
+    async def get_json_path(self) -> Path:
+        """Get the path to the JSON export file."""
+        return self.json_path
 
     # ============== Job Runs (Execution History) ==============
 

@@ -19,6 +19,8 @@ from .types import (
     AgentTurnPayload,
     SystemEventPayload,
     TaskChainPayload,
+    SessionTarget,
+    SessionTargetKind,
     schedule_from_dict,
     payload_from_dict,
 )
@@ -100,6 +102,9 @@ class ScheduledJob:
     # Payload configuration
     payload: Payload = field(default_factory=lambda: AgentTurnPayload())
 
+    # Session target (main/isolated)
+    target: SessionTarget = field(default_factory=SessionTarget)
+
     # Execution settings
     max_retries: int = 3
     retry_delay_ms: int = 60000  # 1 minute
@@ -126,6 +131,7 @@ class ScheduledJob:
             "enabled": self.enabled,
             "schedule": self.schedule.to_dict(),
             "payload": self.payload.to_dict(),
+            "target": self.target.to_dict(),
             "max_retries": self.max_retries,
             "retry_delay_ms": self.retry_delay_ms,
             "on_complete": [p.to_dict() for p in self.on_complete],
@@ -160,6 +166,10 @@ class ScheduledJob:
         if data.get("payload"):
             job.payload = payload_from_dict(data["payload"])
 
+        # Parse target
+        if data.get("target"):
+            job.target = SessionTarget.from_dict(data["target"])
+
         # Parse state
         if data.get("state"):
             job.state = JobState.from_dict(data["state"])
@@ -181,6 +191,7 @@ class JobCreate:
     description: str = ""
     schedule: Schedule = field(default_factory=lambda: AtSchedule())
     payload: Payload = field(default_factory=lambda: AgentTurnPayload())
+    target: SessionTarget = field(default_factory=SessionTarget)
     agent_id: str = "main"
     max_retries: int = 3
     enabled: bool = True
