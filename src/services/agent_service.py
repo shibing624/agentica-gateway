@@ -139,6 +139,7 @@ class AgentService:
                 # 指令
                 instructions=instructions if instructions else None,
                 add_datetime_to_instructions=True,
+                auto_load_mcp=True,
                 # 调试
                 debug_mode=settings.debug,
             )
