@@ -18,6 +18,9 @@ class Settings:
     debug: bool = False
     gateway_token: Optional[str] = None
 
+    # 默认用户ID（单用户场景）
+    default_user_id: str = "default"
+
     # 工作空间
     workspace_path: Path = field(default_factory=lambda: Path.home() / ".agentica" / "workspace")
     data_dir: Path = field(default_factory=lambda: Path.home() / ".agentica" / "data")
@@ -59,6 +62,9 @@ class Settings:
             port=int(os.getenv("PORT", "8789")),
             debug=os.getenv("DEBUG", "").lower() in ("1", "true"),
             gateway_token=os.getenv("GATEWAY_TOKEN"),
+
+            # 默认用户ID
+            default_user_id=os.getenv("DEFAULT_USER_ID", "default"),
 
             # 路径
             workspace_path=Path(os.getenv(

@@ -98,16 +98,6 @@ CREATE_SCHEDULED_JOB_TOOL = {
                 "type": "string",
                 "description": "时区，默认 Asia/Shanghai",
                 "default": "Asia/Shanghai"
-            },
-            "notify_channel": {
-                "type": "string",
-                "description": "通知渠道",
-                "enum": ["feishu", "telegram", "discord", "slack", "webhook", "gradio"],
-                "default": "feishu"
-            },
-            "notify_chat_id": {
-                "type": "string",
-                "description": "通知的目标chat/channel ID"
             }
         },
         "required": ["name", "prompt", "user_id"]
@@ -237,8 +227,6 @@ async def create_scheduled_job_tool(
     interval_seconds: Optional[int] = None,
     run_at_iso: Optional[str] = None,
     timezone: Optional[str] = None,
-    notify_channel: Optional[str] = None,
-    notify_chat_id: Optional[str] = None,
 ) -> str:
     """创建定时任务。LLM 根据用户自然语言解析后直接填参数。
 
@@ -255,15 +243,11 @@ async def create_scheduled_job_tool(
         interval_seconds: 间隔秒数，如 30(每30秒), 3600(每小时)
         run_at_iso: 一次性执行时间，ISO格式如 "2024-01-15T09:30:45"
         timezone: 时区，默认 Asia/Shanghai
-        notify_channel: 通知渠道
-        notify_chat_id: 通知目标ID
 
     Returns:
         JSON string with job creation result
     """
     timezone = timezone or "Asia/Shanghai"
-    notify_channel = notify_channel or "feishu"
-    notify_chat_id = notify_chat_id or ""
     
     if not _scheduler_service:
         return _to_json({
@@ -287,7 +271,7 @@ async def create_scheduled_job_tool(
                 # Parse ISO format datetime
                 run_at = datetime.fromisoformat(run_at_iso.replace("Z", "+00:00"))
                 schedule = AtSchedule.from_datetime(run_at)
-            except ValueError as e:
+            except ValueError:
                 return _to_json({
                     "success": False,
                     "error": f"无效的时间格式: {run_at_iso}，请使用ISO格式如 2024-01-15T09:30:45"
@@ -300,11 +284,7 @@ async def create_scheduled_job_tool(
             })
 
         # Create payload
-        payload = AgentTurnPayload(
-            prompt=prompt,
-            notify_channel=notify_channel,
-            notify_chat_id=notify_chat_id,
-        )
+        payload = AgentTurnPayload(prompt=prompt)
 
         # Create job
         job_create = JobCreate(
@@ -374,6 +354,7 @@ async def list_scheduled_jobs_tool(
             job_list.append({
                 "id": job.id,
                 "name": job.name,
+                "user_id": job.user_id,
                 "schedule": schedule_to_human(job.schedule),
                 "status": job.status.value,
                 "next_run_at_ms": job.state.next_run_at_ms,

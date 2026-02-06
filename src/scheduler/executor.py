@@ -37,19 +37,6 @@ class AgentRunner(Protocol):
         ...
 
 
-class NotificationSender(Protocol):
-    """Protocol for sending notifications."""
-
-    async def send(
-        self,
-        channel: str,
-        chat_id: str,
-        message: str,
-    ) -> bool:
-        """Send a notification and return success status."""
-        ...
-
-
 # Type aliases for dependency injection callbacks
 OnSystemEventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 RunHeartbeatCallback = Callable[[str], Awaitable[None]]
@@ -57,7 +44,7 @@ ReportToMainCallback = Callable[[str, str, str], Awaitable[None]]
 
 
 class JobExecutor:
-    """Executes scheduled jobs by running agents or sending notifications.
+    """Executes scheduled jobs by running agents.
 
     Supports two execution modes:
     - main: Inject systemEvent into user's main session, trigger heartbeat
@@ -69,7 +56,6 @@ class JobExecutor:
     def __init__(
         self,
         agent_runner: AgentRunner | None = None,
-        notification_sender: NotificationSender | None = None,
         # Dependency injection callbacks for main mode
         on_system_event: OnSystemEventCallback | None = None,
         run_heartbeat: RunHeartbeatCallback | None = None,
@@ -79,13 +65,11 @@ class JobExecutor:
 
         Args:
             agent_runner: Implementation for running agent tasks (isolated mode)
-            notification_sender: Implementation for sending notifications
             on_system_event: Callback to inject system event into main session
             run_heartbeat: Callback to trigger heartbeat in main session
             report_to_main: Callback to report isolated execution result to main session
         """
         self.agent_runner = agent_runner
-        self.notification_sender = notification_sender
         self.on_system_event = on_system_event
         self.run_heartbeat = run_heartbeat
         self.report_to_main = report_to_main
@@ -104,12 +88,10 @@ class JobExecutor:
         Returns:
             Execution result message
         """
-        logger.info(f"Executing job {job.id}: {job.name}")
+        logger.info(f"Executing job {job.id}: {job.name} (user: {job.user_id})")
         target = target or SessionTarget()
 
         try:
-            result = ""
-
             # Dispatch based on target mode
             if target.kind == SessionTargetKind.MAIN:
                 result = await self._execute_main_mode(job, target)
@@ -121,11 +103,6 @@ class JobExecutor:
         except Exception as e:
             error_msg = f"Job execution failed: {e}"
             logger.error(error_msg)
-
-            # Try to notify about failure
-            if isinstance(job.payload, AgentTurnPayload) and job.payload.notify_chat_id:
-                await self._send_error_notification(job, job.payload, str(e))
-
             raise
 
     async def _execute_main_mode(
@@ -175,7 +152,7 @@ class JobExecutor:
         if payload_kind == PayloadKind.AGENT_TURN.value or isinstance(payload, AgentTurnPayload):
             result = await self._execute_agent_task(job, cast(AgentTurnPayload, payload))
         elif payload_kind == PayloadKind.SYSTEM_EVENT.value or isinstance(payload, SystemEventPayload):
-            result = await self._execute_notification(job, cast(SystemEventPayload, payload))
+            result = await self._execute_system_event(cast(SystemEventPayload, payload))
         elif payload_kind == PayloadKind.WEBHOOK.value or isinstance(payload, WebhookPayload):
             result = await self._execute_webhook(job, cast(WebhookPayload, payload))
         else:
@@ -185,10 +162,6 @@ class JobExecutor:
         if target.report_to_main and self.report_to_main:
             await self.report_to_main(job.user_id, job.id, result)
             logger.info(f"Reported result to main session for user {job.user_id}")
-
-        # Send result notification if configured
-        if isinstance(payload, AgentTurnPayload) and payload.notify_chat_id:
-            await self._send_result_notification(job, payload, result)
 
         return result
 
@@ -204,6 +177,7 @@ class JobExecutor:
         # Build context for agent
         context = {
             "job_id": job.id,
+            "user_id": job.user_id,
             "scheduled": True,
             "original_prompt": job.description,
             **(payload.context or {}),
@@ -215,25 +189,16 @@ class JobExecutor:
             context=context,
         )
 
+        logger.info(f"Job {job.id} completed: {result[:100]}...")
         return result
 
-    async def _execute_notification(
+    async def _execute_system_event(
         self,
-        job: ScheduledJob,  # noqa: ARG002
         payload: SystemEventPayload,
     ) -> str:
-        """Execute a simple notification task."""
-        if not self.notification_sender:
-            raise RuntimeError("No notification sender configured")
-
-        message = payload.message
-        success = await self.notification_sender.send(
-            channel=payload.channel,
-            chat_id=payload.chat_id,
-            message=f"⏰ 提醒：{message}",
-        )
-
-        return "Notification sent" if success else "Notification failed"
+        """Execute a system event (log only, no notification)."""
+        logger.info(f"System event: {payload.message}")
+        return f"System event logged: {payload.message}"
 
     async def _execute_webhook(
         self,
@@ -276,45 +241,3 @@ class JobExecutor:
                     return f"Webhook PUT: {resp.status}"
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
-
-    async def _send_result_notification(
-        self,
-        job: ScheduledJob,
-        payload: AgentTurnPayload,
-        result: str,
-    ) -> None:
-        """Send task result notification."""
-        if not self.notification_sender:
-            return
-
-        message = f"✅ 定时任务完成\n任务：{job.name}\n结果：{result[:500]}"
-
-        try:
-            await self.notification_sender.send(
-                channel=payload.notify_channel,
-                chat_id=payload.notify_chat_id,
-                message=message,
-            )
-        except Exception as e:
-            logger.error(f"Failed to send result notification: {e}")
-
-    async def _send_error_notification(
-        self,
-        job: ScheduledJob,
-        payload: AgentTurnPayload,
-        error: str,
-    ) -> None:
-        """Send task error notification."""
-        if not self.notification_sender:
-            return
-
-        message = f"❌ 定时任务失败\n任务：{job.name}\n错误：{error[:200]}"
-
-        try:
-            await self.notification_sender.send(
-                channel=payload.notify_channel,
-                chat_id=payload.notify_chat_id,
-                message=message,
-            )
-        except Exception as e:
-            logger.error(f"Failed to send error notification: {e}")

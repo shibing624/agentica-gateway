@@ -19,7 +19,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.scheduler import (
     SchedulerService,
-    init_scheduler_tools,
     ALL_SCHEDULER_TOOLS,
     TOOL_IMPLEMENTATIONS,
     schedule_to_human,
@@ -70,22 +69,6 @@ class OpenAIAgentRunner:
             ],
         )
         return response.choices[0].message.content or ""
-
-
-# ============== Notification Sender ==============
-
-class LogNotificationSender:
-    """Simple notification sender that logs messages."""
-
-    async def send(
-        self,
-        channel: str,
-        chat_id: str,
-        message: str,
-    ) -> bool:
-        """Log notification (replace with real implementation)."""
-        logger.info(f"[Notification] {channel}:{chat_id} -> {message[:100]}")
-        return True
 
 
 # ============== Dependency Injection Callbacks ==============
@@ -156,11 +139,9 @@ async def main():
 
     # Initialize executor with gpt-4o agent runner
     agent_runner = OpenAIAgentRunner()
-    notification_sender = LogNotificationSender()
     
     executor = JobExecutor(
         agent_runner=agent_runner,
-        notification_sender=notification_sender,
         on_system_event=on_system_event,
         run_heartbeat=run_heartbeat,
         report_to_main=report_to_main,
@@ -174,7 +155,6 @@ async def main():
         db_path=db_path,
         json_path=json_path,
         executor=executor.execute,
-        notification_sender=notification_sender,
         on_system_event=on_system_event,
         run_heartbeat=run_heartbeat,
         report_to_main=report_to_main,

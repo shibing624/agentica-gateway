@@ -60,7 +60,6 @@ class SchedulerService:
         db_path: str | Path = "~/.agentica/scheduler.db",
         json_path: str | Path | None = None,
         executor: Any = None,
-        notification_sender: Any = None,
         # Dependency injection callbacks for main mode
         on_system_event: OnSystemEventCallback | None = None,
         run_heartbeat: RunHeartbeatCallback | None = None,
@@ -74,7 +73,6 @@ class SchedulerService:
             db_path: Path to SQLite database for persistence
             json_path: Path to JSON file for human-readable export
             executor: Job executor (implements execute(job) -> Any)
-            notification_sender: Notification sender (implements send(channel, chat_id, msg) -> bool)
             on_system_event: Callback to inject system event into main session
             run_heartbeat: Callback to trigger heartbeat in main session
             report_to_main: Callback to report isolated execution result to main session
@@ -85,10 +83,7 @@ class SchedulerService:
 
         self.store = JobStore(db_path, json_path)
         self.events = EventEmitter()
-        self.deps = SchedulerServiceDeps(
-            executor=executor,
-            notification_sender=notification_sender,
-        )
+        self.deps = SchedulerServiceDeps(executor=executor)
         self.state = SchedulerServiceState()
         
         # Main mode callbacks

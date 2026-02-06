@@ -15,14 +15,6 @@ class JobExecutor(Protocol):
         ...
 
 
-class NotificationSender(Protocol):
-    """Protocol for sending notifications."""
-
-    async def send(self, channel: str, chat_id: str, message: str) -> bool:
-        """Send a notification."""
-        ...
-
-
 @dataclass
 class SchedulerServiceDeps:
     """Dependencies for the scheduler service.
@@ -30,7 +22,6 @@ class SchedulerServiceDeps:
     This allows for dependency injection of external services.
     """
     executor: JobExecutor | None = None
-    notification_sender: NotificationSender | None = None
     event_handler: Callable[[Any], None] | None = None
 
 

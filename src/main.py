@@ -25,9 +25,6 @@ channel_manager: Optional[ChannelManager] = None
 message_router: Optional[MessageRouter] = None
 scheduler: Optional[SchedulerService] = None
 
-# 默认 user_id（单用户场景）
-DEFAULT_USER_ID = "default"
-
 
 # ============== Agent Runner for Scheduler ==============
 
@@ -53,7 +50,7 @@ class GatewayAgentRunner:
         """
         context = context or {}
         job_id = context.get('job_id', str(uuid4()))
-        user_id = context.get('user_id', DEFAULT_USER_ID)
+        user_id = context.get('user_id', settings.default_user_id)
         session_id = f"scheduled_{job_id}"
 
         result = await self.agent_service.chat(
@@ -180,8 +177,6 @@ class JobCreateRequest(BaseModel):
     interval_seconds: Optional[int] = None
     run_at_iso: Optional[str] = None
     timezone: str = "Asia/Shanghai"
-    notify_channel: str = "feishu"
-    notify_chat_id: str = ""
 
 
 class JobResponse(BaseModel):
@@ -354,6 +349,7 @@ async def list_jobs(
                 "id": job.id,
                 "name": job.name,
                 "description": job.description,
+                "user_id": job.user_id,
                 "schedule": schedule_to_human(job.schedule),
                 "status": job.status.value,
                 "enabled": job.enabled,
@@ -412,8 +408,6 @@ async def create_job(request: JobCreateRequest):
         interval_seconds=request.interval_seconds,
         run_at_iso=request.run_at_iso,
         timezone=request.timezone,
-        notify_channel=request.notify_channel,
-        notify_chat_id=request.notify_chat_id,
     )
 
     result = json.loads(result_str)
@@ -862,7 +856,7 @@ async def handle_ws_message(ws: WebSocket, client_id: str, message: dict):
             # 流式 Agent
             text = params.get("message", "")
             session_id = params.get("sessionId", "default")
-            user_id = params.get("userId", DEFAULT_USER_ID)
+            user_id = params.get("userId", settings.default_user_id)
 
             async def on_content(delta: str):
                 await ws_manager.send_event(client_id, "agent.content", {
@@ -1007,7 +1001,7 @@ async def handle_channel_message(message):
     agent_id = message_router.route(message)
     session_id = message_router.get_session_id(message, agent_id)
     # 使用 sender_id 作为 user_id（渠道用户标识）
-    user_id = message.sender_id or DEFAULT_USER_ID
+    user_id = message.sender_id or settings.default_user_id
 
     try:
         result = await agent_service.chat(

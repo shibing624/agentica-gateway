@@ -101,8 +101,8 @@ class GradioChannel(Channel):
         # 保存 self 引用，供闭包使用
         channel = self
 
-        # Gradio 默认使用固定 user_id
-        default_user_id = "gradio_user"
+        # 使用全局配置的默认 user_id
+        default_user_id = settings.default_user_id
 
         # 构建界面
         with gr.Blocks(
