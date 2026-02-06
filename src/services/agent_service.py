@@ -118,8 +118,7 @@ class AgentService:
             if scheduler_tools:
                 instructions.append(self._get_scheduler_instructions())
 
-            # 创建 DeepAgent（user_id 和 session_id 在调用时动态设置）
-            # NOTE: enable_multi_round=False，Model 层已内置递归工具调用（agentic loop）
+            # 创建 DeepAgent
             self._agent = DeepAgent(
                 model=model,
                 # 数据库配置（会话历史存储）
@@ -131,7 +130,7 @@ class AgentService:
                 memory_days=7,
                 # 历史记录配置
                 add_history_to_messages=True,
-                num_history_responses=10,
+                num_history_responses=4,
                 # 工具配置
                 tools=all_tools if all_tools else None,
                 show_tool_calls=True,

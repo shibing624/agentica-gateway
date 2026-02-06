@@ -2,6 +2,7 @@
 import asyncio
 import threading
 import time
+import uuid
 
 from loguru import logger
 
@@ -100,10 +101,6 @@ class GradioChannel(Channel):
         # 保存 self 引用，供闭包使用
         channel = self
 
-        def get_session_id(session_name: str) -> str:
-            name = session_name if session_name else "default"
-            return f"agent:main:gradio:{name}"
-
         # Gradio 默认使用固定 user_id
         default_user_id = "gradio_user"
 
@@ -112,6 +109,9 @@ class GradioChannel(Channel):
             title="Agentica",
             theme=gr.themes.Soft(),
         ) as app:
+            # 使用 State 存储当前 session_id
+            session_state = gr.State(value=f"gradio:{uuid.uuid4().hex[:12]}")
+
             gr.HTML("""
             <div style="text-align: center; margin-bottom: 20px;">
                 <h1>🤖 Agentica</h1>
@@ -142,15 +142,6 @@ class GradioChannel(Channel):
                         clear_btn = gr.Button("Clear", size="sm")
 
                 with gr.Column(scale=1):
-                    gr.Markdown("### Session")
-                    session_input = gr.Textbox(
-                        label="",
-                        value="default",
-                        placeholder="Session name",
-                        show_label=False,
-                    )
-
-                    gr.Markdown("---")
                     gr.Markdown(f"""
 ### Configuration
 - **Provider**: `{settings.model_provider}`
@@ -167,7 +158,7 @@ class GradioChannel(Channel):
                 history = history + [{"role": "user", "content": message}]
                 return history, ""
 
-            def bot_response(history, session):
+            def bot_response(history, session_id):
                 """Bot 流式响应"""
                 if not history:
                     return history
@@ -175,12 +166,8 @@ class GradioChannel(Channel):
                 user_msg = history[-1]["content"]
                 history = history + [{"role": "assistant", "content": ""}]
 
-                session_id = get_session_id(session)
-                # 提取 session 短名用于日志
-                session_short = session if session else "default"
-                
                 # 记录用户输入日志
-                logger.info(f"[gradio] {session_short}: {user_msg}")
+                logger.info(f"[gradio] {session_id}: {user_msg}")
 
                 # 动态获取 agent_service
                 agent_service = channel._agent_service
@@ -250,15 +237,21 @@ class GradioChannel(Channel):
             msg.submit(
                 user_message, [msg, chatbot], [chatbot, msg]
             ).then(
-                bot_response, [chatbot, session_input], [chatbot]
+                bot_response, [chatbot, session_state], [chatbot]
             )
 
             submit_btn.click(
                 user_message, [msg, chatbot], [chatbot, msg]
             ).then(
-                bot_response, [chatbot, session_input], [chatbot]
+                bot_response, [chatbot, session_state], [chatbot]
             )
 
-            clear_btn.click(lambda: [], outputs=[chatbot])
+            def clear_and_new_session():
+                """清空对话并创建新 session"""
+                new_session_id = f"gradio:{uuid.uuid4().hex[:12]}"
+                logger.info(f"[gradio] New session: {new_session_id}")
+                return [], new_session_id
+
+            clear_btn.click(clear_and_new_session, outputs=[chatbot, session_state])
 
         self._app = app
