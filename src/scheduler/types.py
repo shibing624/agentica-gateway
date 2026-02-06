@@ -96,9 +96,14 @@ class EverySchedule:
 
 @dataclass
 class CronSchedule:
-    """Cron expression schedule."""
+    """Cron expression schedule.
+    
+    Supports both 5-part (minute precision) and 6-part (second precision) formats:
+    - 5-part: "min hour day month weekday" (e.g., "30 7 * * *" = every day at 7:30)
+    - 6-part: "sec min hour day month weekday" (e.g., "0 30 7 * * *" = every day at 7:30:00)
+    """
     kind: Literal["cron"] = "cron"
-    expression: str = ""  # Cron expression (5-part: min hour day month weekday)
+    expression: str = ""  # Cron expression (5 or 6 parts)
     timezone: str = "Asia/Shanghai"
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,6 +119,29 @@ class CronSchedule:
             expression=data.get("expression", ""),
             timezone=data.get("timezone", "Asia/Shanghai"),
         )
+
+    @classmethod
+    def at_time(cls, hour: int, minute: int = 0, second: int = 0, 
+                weekday: str = "*", timezone: str = "Asia/Shanghai") -> "CronSchedule":
+        """Create a daily schedule at specific time.
+        
+        Args:
+            hour: Hour (0-23)
+            minute: Minute (0-59)
+            second: Second (0-59), if 0 uses 5-part format
+            weekday: Weekday (0-6 or *, 0=Sunday), e.g. "1-5" for weekdays
+            timezone: Timezone
+            
+        Examples:
+            CronSchedule.at_time(7, 30)  # 每天 7:30
+            CronSchedule.at_time(7, 30, 45)  # 每天 7:30:45
+            CronSchedule.at_time(9, 0, 0, "1-5")  # 工作日 9:00
+        """
+        if second == 0:
+            expr = f"{minute} {hour} * * {weekday}"
+        else:
+            expr = f"{second} {minute} {hour} * * {weekday}"
+        return cls(expression=expr, timezone=timezone)
 
 
 # Union type for all schedule types

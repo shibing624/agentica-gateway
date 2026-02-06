@@ -1,11 +1,13 @@
 """Agent tools for creating and managing scheduled jobs.
 
 These tools are designed to be used by an AI agent to handle natural language
-requests for scheduled tasks.
+requests for scheduled tasks. The LLM should parse natural language and fill
+in the structured parameters directly.
 
 Note: agentica tool functions MUST return str, not dict.
 """
 import json
+from datetime import datetime
 from typing import Optional, List
 
 from .models import JobCreate
@@ -16,7 +18,6 @@ from .types import (
     AgentTurnPayload,
 )
 from .schedule import schedule_to_human
-from .task_parser import TaskParser
 from .service import SchedulerService
 
 
@@ -27,20 +28,17 @@ def _to_json(data: dict) -> str:
 
 # Singleton instances (initialized by gateway)
 _scheduler_service: SchedulerService | None = None
-_task_parser: TaskParser | None = None
 
 
 def init_scheduler_tools(
     scheduler_service: SchedulerService,
-    task_parser: TaskParser | None = None,
 ) -> None:
     """Initialize the scheduler tools with service instances.
 
     Call this during gateway startup.
     """
-    global _scheduler_service, _task_parser
+    global _scheduler_service
     _scheduler_service = scheduler_service
-    _task_parser = task_parser or TaskParser()
 
 
 # ============== Tool Definitions ==============
@@ -48,43 +46,71 @@ def init_scheduler_tools(
 
 CREATE_SCHEDULED_JOB_TOOL = {
     "name": "create_scheduled_job",
-    "description": """创建一个新的定时任务。
+    "description": """创建定时任务。根据用户的自然语言描述，解析并填入对应参数。
 
-用户可以用自然语言描述任务，例如：
-- "每天早上9点提醒我看新闻"
-- "每周一下午3点发送周报"
-- "明天上午10点提醒我开会"
-- "每隔30分钟检查一下服务器状态"
+调度类型（三选一）：
+1. cron_expression: Cron表达式，支持5段或6段格式
+   - 5段(分钟精度): "分 时 日 月 周" 如 "30 7 * * *"（每天7:30）
+   - 6段(秒级精度): "秒 分 时 日 月 周" 如 "0 30 7 * * *"（每天7:30:00）
+   - 常用示例：
+     * "30 7 * * *" = 每天7:30
+     * "0 30 7 * * *" = 每天7:30:00（秒级）
+     * "0 9 * * 1-5" = 工作日9:00
+     * "*/30 * * * *" = 每30分钟
+     * "*/10 * * * * *" = 每10秒
 
-工具会自动解析时间表达式并创建相应的定时任务。""",
+2. interval_seconds: 间隔执行（秒数）
+   - 30 = 每30秒
+   - 300 = 每5分钟
+   - 3600 = 每小时
+
+3. run_at_iso: 一次性执行时间（ISO格式）
+   - "2024-01-15T09:30:00" = 某天9:30执行一次
+   - "2024-01-15T09:30:45" = 某天9:30:45执行一次（秒级）""",
     "parameters": {
         "type": "object",
         "properties": {
-            "task_description": {
+            "name": {
                 "type": "string",
-                "description": "用户的自然语言任务描述，包含时间和要执行的动作"
+                "description": "任务名称（简短描述）"
+            },
+            "prompt": {
+                "type": "string",
+                "description": "任务执行时要做的事情（给Agent的指令）"
             },
             "user_id": {
                 "type": "string",
                 "description": "用户ID"
             },
+            "cron_expression": {
+                "type": "string",
+                "description": "Cron表达式。5段(分钟)或6段(秒级)格式。如 '30 7 * * *'(每天7:30) 或 '0 30 7 * * *'(每天7:30:00秒级)"
+            },
+            "interval_seconds": {
+                "type": "integer",
+                "description": "间隔秒数。如 30(每30秒), 300(每5分钟), 3600(每小时)"
+            },
+            "run_at_iso": {
+                "type": "string",
+                "description": "一次性执行时间，ISO格式。如 '2024-01-15T09:30:45'"
+            },
+            "timezone": {
+                "type": "string",
+                "description": "时区，默认 Asia/Shanghai",
+                "default": "Asia/Shanghai"
+            },
             "notify_channel": {
                 "type": "string",
-                "description": "通知渠道：feishu, telegram, discord, slack, webhook, gradio",
+                "description": "通知渠道",
                 "enum": ["feishu", "telegram", "discord", "slack", "webhook", "gradio"],
                 "default": "feishu"
             },
             "notify_chat_id": {
                 "type": "string",
                 "description": "通知的目标chat/channel ID"
-            },
-            "timezone": {
-                "type": "string",
-                "description": "用户时区，默认 Asia/Shanghai",
-                "default": "Asia/Shanghai"
             }
         },
-        "required": ["task_description", "user_id"]
+        "required": ["name", "prompt", "user_id"]
     }
 }
 
@@ -204,75 +230,78 @@ CREATE_TASK_CHAIN_TOOL = {
 # Note: All tool functions MUST return str (not dict) for agentica compatibility.
 
 async def create_scheduled_job_tool(
-    task_description: str,
+    name: str,
+    prompt: str,
     user_id: str,
+    cron_expression: Optional[str] = None,
+    interval_seconds: Optional[int] = None,
+    run_at_iso: Optional[str] = None,
+    timezone: Optional[str] = None,
     notify_channel: Optional[str] = None,
     notify_chat_id: Optional[str] = None,
-    timezone: Optional[str] = None,
 ) -> str:
-    """创建一个新的定时任务。
+    """创建定时任务。LLM 根据用户自然语言解析后直接填参数。
 
-    用户可以用自然语言描述任务，例如：
-    - "每天早上9点提醒我看新闻"
-    - "每周一下午3点发送周报"
-    - "明天上午10点提醒我开会"
+    调度类型三选一：
+    - cron_expression: Cron表达式，5段或6段格式
+    - interval_seconds: 间隔秒数
+    - run_at_iso: 一次性执行时间（ISO格式）
 
     Args:
-        task_description: 用户的自然语言任务描述，包含时间和要执行的动作
+        name: 任务名称
+        prompt: Agent执行的指令
         user_id: 用户ID
-        notify_channel: 通知渠道 (feishu/telegram/gradio)，默认 gradio
-        notify_chat_id: 通知的目标chat/channel ID
-        timezone: 用户时区，默认 Asia/Shanghai
+        cron_expression: Cron表达式，如 "30 7 * * *"(每天7:30) 或 "0 30 7 * * *"(每天7:30:00秒级)
+        interval_seconds: 间隔秒数，如 30(每30秒), 3600(每小时)
+        run_at_iso: 一次性执行时间，ISO格式如 "2024-01-15T09:30:45"
+        timezone: 时区，默认 Asia/Shanghai
+        notify_channel: 通知渠道
+        notify_chat_id: 通知目标ID
 
     Returns:
         JSON string with job creation result
     """
-    # Handle None values with defaults
-    notify_channel = notify_channel or "gradio"
-    notify_chat_id = notify_chat_id or ""
     timezone = timezone or "Asia/Shanghai"
+    notify_channel = notify_channel or "feishu"
+    notify_chat_id = notify_chat_id or ""
     
-    if not _scheduler_service or not _task_parser:
+    if not _scheduler_service:
         return _to_json({
             "success": False,
             "error": "Scheduler service not initialized"
         })
 
     try:
-        # Parse natural language
-        parsed = await _task_parser.parse(
-            text=task_description,
-            user_timezone=timezone,
-        )
-
-        # Check parsing confidence
-        if parsed.confidence < 0.5:
-            return _to_json({
-                "success": False,
-                "error": "无法理解任务时间，请更明确地描述。",
-                "confidence": parsed.confidence,
-                "parsed_action": parsed.parsed_action,
-            })
-
-        # Determine schedule type
-        if parsed.cron_expression:
+        # Determine schedule type (priority: cron > interval > run_at)
+        schedule = None
+        
+        if cron_expression:
             schedule = CronSchedule(
-                expression=parsed.cron_expression,
+                expression=cron_expression,
                 timezone=timezone,
             )
-        elif parsed.interval_seconds:
-            schedule = EverySchedule.from_seconds(parsed.interval_seconds)
-        elif parsed.run_at:
-            schedule = AtSchedule.from_datetime(parsed.run_at)
-        else:
+        elif interval_seconds and interval_seconds > 0:
+            schedule = EverySchedule(interval_ms=interval_seconds * 1000)
+        elif run_at_iso:
+            try:
+                # Parse ISO format datetime
+                run_at = datetime.fromisoformat(run_at_iso.replace("Z", "+00:00"))
+                schedule = AtSchedule.from_datetime(run_at)
+            except ValueError as e:
+                return _to_json({
+                    "success": False,
+                    "error": f"无效的时间格式: {run_at_iso}，请使用ISO格式如 2024-01-15T09:30:45"
+                })
+        
+        if not schedule:
             return _to_json({
                 "success": False,
-                "error": "无法确定执行时间",
+                "error": "请指定调度方式：cron_expression、interval_seconds 或 run_at_iso"
             })
 
         # Create payload
         payload = AgentTurnPayload(
-            prompt=parsed.parsed_action,
+            prompt=prompt,
             notify_channel=notify_channel,
             notify_chat_id=notify_chat_id,
         )
@@ -280,8 +309,8 @@ async def create_scheduled_job_tool(
         # Create job
         job_create = JobCreate(
             user_id=user_id,
-            name=parsed.parsed_action[:50],
-            description=task_description,
+            name=name[:50],
+            description=prompt,
             schedule=schedule,
             payload=payload,
         )

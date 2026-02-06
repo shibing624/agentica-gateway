@@ -79,7 +79,10 @@ def _compute_every_next(
 
 
 def _compute_cron_next(schedule: CronSchedule, current_ms: int) -> int | None:
-    """Compute next run for cron schedule using croniter."""
+    """Compute next run for cron schedule using croniter.
+    
+    Supports both 5-part (minute precision) and 6-part (second precision) formats.
+    """
     try:
         from croniter import croniter
     except ImportError:
@@ -91,8 +94,14 @@ def _compute_cron_next(schedule: CronSchedule, current_ms: int) -> int | None:
         tz = ZoneInfo(schedule.timezone)
         current_dt = datetime.fromtimestamp(current_ms / 1000, tz=tz)
 
-        # Create croniter instance
-        cron = croniter(schedule.expression, current_dt)
+        # Check if 6-part expression (with seconds)
+        parts = schedule.expression.split()
+        if len(parts) == 6:
+            # croniter supports 6-part with second_at_beginning=True
+            cron = croniter(schedule.expression, current_dt, second_at_beginning=True)
+        else:
+            # Standard 5-part
+            cron = croniter(schedule.expression, current_dt)
 
         # Get next run time
         next_dt = cron.get_next(datetime)
@@ -105,21 +114,30 @@ def _compute_cron_next(schedule: CronSchedule, current_ms: int) -> int | None:
 
 
 def _compute_cron_fallback(schedule: CronSchedule, current_ms: int) -> int | None:
-    """Fallback cron calculation for simple patterns when croniter is unavailable."""
+    """Fallback cron calculation for simple patterns when croniter is unavailable.
+    
+    Supports both 5-part and 6-part (with seconds) formats.
+    """
     # Parse the expression
     parts = schedule.expression.split()
-    if len(parts) != 5:
+    
+    # Handle both 5-part and 6-part formats
+    if len(parts) == 5:
+        second = "0"
+        minute, hour, day, month, weekday = parts
+    elif len(parts) == 6:
+        second, minute, hour, day, month, weekday = parts
+    else:
         return None
-
-    minute, hour, day, month, weekday = parts
 
     try:
         tz = ZoneInfo(schedule.timezone)
         current_dt = datetime.fromtimestamp(current_ms / 1000, tz=tz)
 
-        # Handle simple daily patterns: "0 9 * * *" (every day at 9:00)
+        # Handle simple daily patterns: "0 9 * * *" or "30 0 9 * * *"
         if day == "*" and month == "*" and weekday == "*":
-            if minute.isdigit() and hour.isdigit():
+            if minute.isdigit() and hour.isdigit() and (second.isdigit() or second == "0"):
+                target_second = int(second) if second.isdigit() else 0
                 target_minute = int(minute)
                 target_hour = int(hour)
 
@@ -127,7 +145,7 @@ def _compute_cron_fallback(schedule: CronSchedule, current_ms: int) -> int | Non
                 next_dt = current_dt.replace(
                     hour=target_hour,
                     minute=target_minute,
-                    second=0,
+                    second=target_second,
                     microsecond=0,
                 )
 
@@ -151,6 +169,22 @@ def _compute_cron_fallback(schedule: CronSchedule, current_ms: int) -> int | Non
                 next_dt = current_dt.replace(minute=next_minute, second=0, microsecond=0)
 
             return int(next_dt.timestamp() * 1000)
+        
+        # Handle second-level interval: "*/30 * * * * *" (every 30 seconds)
+        if len(parts) == 6 and second.startswith("*/") and minute == "*" and hour == "*":
+            interval_seconds = int(second[2:])
+            current_second = current_dt.second
+
+            next_second = ((current_second // interval_seconds) + 1) * interval_seconds
+            if next_second >= 60:
+                next_dt = current_dt.replace(second=next_second % 60, microsecond=0)
+                # Add one minute
+                from datetime import timedelta
+                next_dt = next_dt + timedelta(minutes=1)
+            else:
+                next_dt = current_dt.replace(second=next_second, microsecond=0)
+
+            return int(next_dt.timestamp() * 1000)
 
     except Exception:
         pass
@@ -163,19 +197,22 @@ def validate_cron_expression(expression: str) -> bool:
     """Validate a cron expression.
 
     Args:
-        expression: Cron expression to validate
+        expression: Cron expression to validate (5-part or 6-part)
 
     Returns:
         True if valid, False otherwise
     """
     parts = expression.split()
-    if len(parts) != 5:
+    if len(parts) not in (5, 6):
         return False
 
     # Try using croniter for validation
     try:
         from croniter import croniter
-        croniter(expression)
+        if len(parts) == 6:
+            croniter(expression, second_at_beginning=True)
+        else:
+            croniter(expression)
         return True
     except ImportError:
         pass
@@ -206,25 +243,39 @@ def cron_to_human(expression: str, timezone: str = "Asia/Shanghai") -> str:  # n
     """Convert cron expression to human-readable description.
 
     Args:
-        expression: Cron expression
+        expression: Cron expression (5-part or 6-part)
         timezone: Timezone for display
 
     Returns:
         Human-readable description in Chinese
     """
     parts = expression.split()
-    if len(parts) != 5:
+    if len(parts) not in (5, 6):
         return f"Cron: {expression}"
 
-    minute, hour, day, month, weekday = parts
+    # Parse 5-part or 6-part format
+    if len(parts) == 6:
+        second, minute, hour, day, month, weekday = parts
+        has_seconds = True
+    else:
+        second = "0"
+        minute, hour, day, month, weekday = parts
+        has_seconds = False
 
     # Common patterns
     if day == "*" and month == "*":
+        time_str = ""
+        if minute.isdigit() and hour.isdigit():
+            if has_seconds and second.isdigit() and int(second) > 0:
+                time_str = f"{hour}:{minute.zfill(2)}:{second.zfill(2)}"
+            elif minute == "0":
+                time_str = f"{hour}:00"
+            else:
+                time_str = f"{hour}:{minute.zfill(2)}"
+        
         if weekday == "*":
             # Daily
-            if minute == "0":
-                return f"每天 {hour}:00"
-            return f"每天 {hour}:{minute.zfill(2)}"
+            return f"每天 {time_str}" if time_str else f"Cron: {expression}"
         else:
             # Weekly
             weekday_names = {
@@ -233,15 +284,19 @@ def cron_to_human(expression: str, timezone: str = "Asia/Shanghai") -> str:  # n
                 "1-5": "工作日", "0,6": "周末", "6,0": "周末",
             }
             wd = weekday_names.get(weekday, f"周{weekday}")
-            if minute == "0":
-                return f"每{wd} {hour}:00"
-            return f"每{wd} {hour}:{minute.zfill(2)}"
+            return f"每{wd} {time_str}" if time_str else f"Cron: {expression}"
 
-    # Interval patterns
+    # Second-level interval: "*/30 * * * * *"
+    if has_seconds and second.startswith("*/") and minute == "*" and hour == "*":
+        interval = second[2:]
+        return f"每隔 {interval} 秒"
+
+    # Minute-level interval: "*/30 * * * *"
     if minute.startswith("*/") and hour == "*" and day == "*" and month == "*" and weekday == "*":
         interval = minute[2:]
         return f"每隔 {interval} 分钟"
 
+    # Hour-level interval
     if hour.startswith("*/") and minute == "0" and day == "*" and month == "*" and weekday == "*":
         interval = hour[2:]
         return f"每隔 {interval} 小时"
@@ -285,7 +340,7 @@ def schedule_to_human(schedule: Schedule) -> str:
     if isinstance(schedule, AtSchedule):
         if schedule.at_ms > 0:
             dt = datetime.fromtimestamp(schedule.at_ms / 1000)
-            return f"在 {dt.strftime('%Y-%m-%d %H:%M')} 执行一次"
+            return f"在 {dt.strftime('%Y-%m-%d %H:%M:%S')} 执行一次"
         return "未设置执行时间"
     elif isinstance(schedule, EverySchedule):
         return interval_to_human(schedule.interval_ms)

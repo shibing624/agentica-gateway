@@ -1,10 +1,12 @@
-"""Scheduler demo showing SessionTarget modes and dependency injection callbacks.
+"""Scheduler demo showing SessionTarget modes and second-level precision.
 
 This example demonstrates:
+- Second-level precision with 6-part cron: "0 30 7 * * *" (7:30:00)
+- CronSchedule.at_time() helper method
+- EverySchedule with second-level intervals
 - SessionTarget: main (inject to main session) vs isolated (independent execution)
-- Dependency injection callbacks: on_system_event, run_heartbeat, report_to_main
+- Dependency injection callbacks
 - JSON export for human-readable task viewing
-- Various payload types: agent_turn, system_event, webhook
 """
 import asyncio
 from pathlib import Path
@@ -18,10 +20,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.scheduler import (
     SchedulerService,
-    TaskParser,
     init_scheduler_tools,
     ALL_SCHEDULER_TOOLS,
     TOOL_IMPLEMENTATIONS,
+    schedule_to_human,
 )
 from src.scheduler.executor import JobExecutor, SimpleAgentRunner, MultiChannelNotificationSender
 from src.scheduler.models import JobCreate
@@ -74,14 +76,53 @@ async def report_to_main(user_id: str, job_id: str, result: str) -> None:
 # ============== Main Demo ==============
 
 async def main():
-    """Demonstrate scheduler with SessionTarget and callbacks."""
+    """Demonstrate scheduler with second-level precision and SessionTarget."""
     
     logger.info("=" * 60)
-    logger.info("Scheduler Demo: SessionTarget & Dependency Injection")
+    logger.info("Scheduler Demo: Second-Level Precision & LLM-Friendly Tools")
     logger.info("=" * 60)
 
-    # 1. Initialize executor with both modes supported
-    agent_runner = SimpleAgentRunner(llm_client=None)  # Mock for demo
+    # ============== Demo 1: CronSchedule.at_time() Helper ==============
+    logger.info("\n--- CronSchedule.at_time() 便捷方法 ---")
+    
+    cron_examples = [
+        ("每天7:30", CronSchedule.at_time(7, 30)),
+        ("每天7:30:45 (秒级)", CronSchedule.at_time(7, 30, 45)),
+        ("工作日9:00", CronSchedule.at_time(9, 0, 0, "1-5")),
+        ("周末10点", CronSchedule.at_time(10, 0, 0, "0,6")),
+    ]
+    for desc, cron in cron_examples:
+        logger.info(f'  {desc} -> expression="{cron.expression}" ({schedule_to_human(cron)})')
+
+    # ============== Demo 2: Direct Cron Expressions ==============
+    logger.info("\n--- 直接使用 Cron 表达式 ---")
+    
+    cron_direct = [
+        ("5段格式 - 每天7:30", "30 7 * * *"),
+        ("6段格式 - 每天7:30:45", "45 30 7 * * *"),
+        ("每30分钟", "*/30 * * * *"),
+        ("每10秒", "*/10 * * * * *"),
+    ]
+    for desc, expr in cron_direct:
+        cron = CronSchedule(expression=expr)
+        logger.info(f'  {desc} -> "{expr}" ({schedule_to_human(cron)})')
+
+    # ============== Demo 3: Interval with Seconds ==============
+    logger.info("\n--- EverySchedule 秒级间隔 ---")
+    
+    every_examples = [
+        ("每30秒", EverySchedule(interval_ms=30000)),
+        ("每5分钟", EverySchedule.from_seconds(300)),
+        ("每小时", EverySchedule.from_seconds(3600)),
+    ]
+    for desc, every in every_examples:
+        logger.info(f'  {desc} -> interval_ms={every.interval_ms} ({schedule_to_human(every)})')
+
+    # ============== Demo 4: Full Scheduler Integration ==============
+    logger.info("\n--- 完整调度器示例 ---")
+
+    # Initialize executor
+    agent_runner = SimpleAgentRunner(llm_client=None)
     notification_sender = MultiChannelNotificationSender(
         telegram_bot=None,
         discord_client=None,
@@ -91,13 +132,12 @@ async def main():
     executor = JobExecutor(
         agent_runner=agent_runner,
         notification_sender=notification_sender,
-        # Main mode callbacks
         on_system_event=on_system_event,
         run_heartbeat=run_heartbeat,
         report_to_main=report_to_main,
     )
 
-    # 2. Initialize scheduler service with JSON export
+    # Initialize scheduler service
     db_path = Path("~/.agentica/demo_scheduler.db").expanduser()
     json_path = Path("~/.agentica/demo_tasks.json").expanduser()
     
@@ -106,120 +146,90 @@ async def main():
         json_path=json_path,
         executor=executor.execute,
         notification_sender=notification_sender,
-        # Main mode callbacks (also passed to service for reference)
         on_system_event=on_system_event,
         run_heartbeat=run_heartbeat,
         report_to_main=report_to_main,
-        # Auto-export to JSON for human viewing
         auto_export_json=True,
     )
 
-    # 3. Start scheduler
     await scheduler.start()
     logger.info("Scheduler started!")
 
-    # 4. Demo: Create jobs with different SessionTarget modes
+    # Create jobs using various methods
     
-    # Job 1: Main mode - Inject daily morning briefing into main session
+    # Job 1: CronSchedule.at_time() - 每天7:30:45 (秒级精度)
     job1 = await scheduler.add(JobCreate(
         user_id="demo_user",
         name="每日晨报",
-        description="每天早上9点在主会话中推送新闻摘要",
-        schedule=CronSchedule(expression="0 9 * * *", timezone="Asia/Shanghai"),
+        description="每天早上7:30:45精确推送新闻",
+        schedule=CronSchedule.at_time(7, 30, 45),
         payload=AgentTurnPayload(
             prompt="请为我总结今天的科技新闻头条",
             agent_id="news_agent",
         ),
         target=SessionTarget(
             kind=SessionTargetKind.MAIN,
-            trigger_heartbeat=True,  # Wake up agent to process
+            trigger_heartbeat=True,
         ),
     ))
-    logger.info(f"Created main-mode job: {job1.name} (ID: {job1.id})")
+    logger.info(f"Created job: {job1.name} (schedule: {schedule_to_human(job1.schedule)})")
 
-    # Job 2: Isolated mode - Background research task
+    # Job 2: EverySchedule - 每30秒
     job2 = await scheduler.add(JobCreate(
         user_id="demo_user",
-        name="后台研究任务",
-        description="每小时独立执行的数据分析任务",
-        schedule=EverySchedule.from_seconds(3600),  # Every hour
-        payload=AgentTurnPayload(
-            prompt="分析最近的股票市场趋势",
-            agent_id="research_agent",
-            timeout_seconds=600,
+        name="秒级心跳检测",
+        description="每30秒执行健康检查",
+        schedule=EverySchedule(interval_ms=30000),
+        payload=WebhookPayload(
+            url="https://api.example.com/health",
+            method="GET",
+            timeout_seconds=5,
         ),
-        target=SessionTarget(
-            kind=SessionTargetKind.ISOLATED,
-            report_to_main=True,  # Report result back
-        ),
+        target=SessionTarget(kind=SessionTargetKind.ISOLATED),
     ))
-    logger.info(f"Created isolated-mode job: {job2.name} (ID: {job2.id})")
+    logger.info(f"Created job: {job2.name} (schedule: {schedule_to_human(job2.schedule)})")
 
-    # Job 3: Simple notification (system_event)
+    # Job 3: CronSchedule 6-part format - 每10秒
     job3 = await scheduler.add(JobCreate(
         user_id="demo_user",
-        name="喝水提醒",
-        description="每2小时提醒喝水",
-        schedule=EverySchedule.from_seconds(7200),
-        payload=SystemEventPayload(
-            message="该喝水了，保持健康！",
-            channel="telegram",
-            chat_id="12345678",
+        name="高频数据采集",
+        description="每10秒采集数据",
+        schedule=CronSchedule(expression="*/10 * * * * *"),
+        payload=AgentTurnPayload(
+            prompt="采集最新传感器数据",
+            agent_id="data_agent",
         ),
     ))
-    logger.info(f"Created notification job: {job3.name} (ID: {job3.id})")
+    logger.info(f"Created job: {job3.name} (schedule: {schedule_to_human(job3.schedule)})")
 
-    # Job 4: One-time webhook task
-    future_time = datetime.now() + timedelta(minutes=5)
+    # Job 4: 工作日9点
     job4 = await scheduler.add(JobCreate(
         user_id="demo_user",
-        name="API数据同步",
-        description="5分钟后执行一次性数据同步",
-        schedule=AtSchedule.from_datetime(future_time),
-        payload=WebhookPayload(
-            url="https://api.example.com/sync",
-            method="POST",
-            headers={"Authorization": "Bearer xxx"},
-            body={"source": "scheduler"},
-            timeout_seconds=30,
+        name="工作日晨会提醒",
+        description="工作日早上9点提醒",
+        schedule=CronSchedule.at_time(9, 0, 0, "1-5"),
+        payload=SystemEventPayload(
+            message="该参加晨会了！",
+            channel="telegram",
         ),
     ))
-    logger.info(f"Created one-time webhook job: {job4.name} (ID: {job4.id})")
+    logger.info(f"Created job: {job4.name} (schedule: {schedule_to_human(job4.schedule)})")
 
-    # 5. Show JSON export path
-    json_path = await scheduler.get_json_path()
-    logger.info(f"Tasks exported to JSON: {json_path}")
-
-    # 6. List all jobs
+    # List all jobs
     jobs = await scheduler.list(user_id="demo_user")
-    logger.info(f"Total jobs for demo_user: {len(jobs)}")
+    logger.info(f"\nTotal jobs: {len(jobs)}")
     for job in jobs:
         target_mode = job.target.kind.value if job.target else "isolated"
-        logger.info(f"  - {job.name} [{target_mode}] (next: {job.state.next_run_at_ms})")
+        human_schedule = schedule_to_human(job.schedule)
+        logger.info(f"  - {job.name} [{target_mode}]: {human_schedule}")
 
-    # 7. Get scheduler stats
-    stats = await scheduler.get_stats()
-    logger.info(f"Scheduler stats: {stats.to_dict()}")
-
-    # 8. Demo: Force run a job
-    logger.info("\n--- Force executing job2 (isolated mode) ---")
-    run_result = await scheduler.run(job2.id, mode="force")
-    logger.info(f"Run result: {run_result.to_dict()}")
-
-    # 9. Keep running briefly then cleanup
-    logger.info("\nScheduler running... (Ctrl+C to stop)")
-    try:
-        await asyncio.sleep(10)  # Run for 10 seconds in demo
-    except KeyboardInterrupt:
-        pass
-    
     # Cleanup
     logger.info("\nCleaning up demo jobs...")
     for job in jobs:
         await scheduler.remove(job.id)
     
     await scheduler.stop()
-    logger.info("Scheduler stopped!")
+    logger.info("Done!")
 
 
 def register_tools_with_agent(agent_framework):
