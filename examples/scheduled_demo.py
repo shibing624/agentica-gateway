@@ -6,7 +6,7 @@ This example demonstrates:
 - EverySchedule with second-level intervals
 - SessionTarget: main (inject to main session) vs isolated (independent execution)
 - Dependency injection callbacks
-- JSON export for human-readable task viewing
+- JSON file storage for easy task viewing and editing
 """
 import asyncio
 from pathlib import Path
@@ -148,17 +148,14 @@ async def main():
     )
 
     # Initialize scheduler service
-    db_path = Path("/tmp/demo_scheduler.db").expanduser()
-    json_path = Path("/tmp/demo_tasks.json").expanduser()
+    json_path = Path("/tmp/demo_scheduler.json").expanduser()
     
     scheduler = SchedulerService(
-        db_path=db_path,
         json_path=json_path,
         executor=executor.execute,
         on_system_event=on_system_event,
         run_heartbeat=run_heartbeat,
         report_to_main=report_to_main,
-        auto_export_json=True,
     )
 
     await scheduler.start()

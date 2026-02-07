@@ -17,14 +17,14 @@ from ..types import (
     TaskChainPayload,
 )
 from .events import EventEmitter, emit_job_event, EventTypes
-from .store import JobStore
+from .json_store import JsonJobStore
 from .state import SchedulerServiceState, SchedulerServiceDeps
 
 logger = logger.bind(module="scheduler.ops")
 
 
 async def add_job(
-    store: JobStore,
+    store: JsonJobStore,
     events: EventEmitter,
     job_create: JobCreate,
 ) -> ScheduledJob:
@@ -73,7 +73,7 @@ async def add_job(
 
 
 async def update_job(
-    store: JobStore,
+    store: JsonJobStore,
     events: EventEmitter,
     job_id: str,
     patch: JobPatch,
@@ -120,7 +120,7 @@ async def update_job(
 
 
 async def remove_job(
-    store: JobStore,
+    store: JsonJobStore,
     events: EventEmitter,
     job_id: str,
 ) -> RemoveResult:
@@ -158,7 +158,7 @@ async def remove_job(
 
 
 async def pause_job(
-    store: JobStore,
+    store: JsonJobStore,
     events: EventEmitter,
     job_id: str,
 ) -> ScheduledJob | None:
@@ -189,7 +189,7 @@ async def pause_job(
 
 
 async def resume_job(
-    store: JobStore,
+    store: JsonJobStore,
     events: EventEmitter,
     job_id: str,
 ) -> ScheduledJob | None:
@@ -230,7 +230,7 @@ async def resume_job(
 
 
 async def chain_jobs(
-    store: JobStore,
+    store: JsonJobStore,
     events: EventEmitter,
     job_id: str,
     next_job_id: str,
@@ -278,7 +278,7 @@ async def chain_jobs(
 
 
 async def get_status(
-    store: JobStore,
+    store: JsonJobStore,
     state: SchedulerServiceState,
 ) -> SchedulerStatus:
     """Get scheduler status.

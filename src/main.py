@@ -83,13 +83,13 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     channel_manager = ChannelManager()
     message_router = MessageRouter(default_agent="main")
 
-    # 初始化新的调度器
-    db_path = settings.data_dir / "scheduler.db"
+    # 初始化新的调度器（使用 JSON 文件存储，方便查看和修改）
+    json_path = settings.data_dir / "scheduler.json"
     agent_runner = GatewayAgentRunner(agent_service)
     executor = JobExecutor(agent_runner=agent_runner)
 
     scheduler = SchedulerService(
-        db_path=str(db_path),
+        json_path=str(json_path),
         executor=executor,
     )
 

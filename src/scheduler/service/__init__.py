@@ -2,7 +2,7 @@
 
 This package contains the core scheduler service components:
 - state.py: State management and dependencies
-- store.py: SQLite persistence layer
+- json_store.py: JSON file persistence layer
 - ops.py: Core operations (add, remove, update, etc.)
 - timer.py: Timer/scheduler logic
 - events.py: Event system

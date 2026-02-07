@@ -4,7 +4,7 @@ This is the unified entry point for all scheduler operations.
 Supports:
 - Session target modes (main/isolated)
 - Dependency injection callbacks
-- JSON file export for human-readable viewing
+- JSON file storage for easy viewing and editing
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from ..types import (
     SessionTarget,
 )
 from .state import SchedulerServiceDeps, SchedulerServiceState
-from .store import JobStore
+from .json_store import JsonJobStore
 from .events import EventEmitter, emit_job_event, EventTypes
 from . import ops
 from . import timer
@@ -52,36 +52,31 @@ class SchedulerService:
     Supports:
     - Session target modes (main/isolated)
     - Dependency injection for main mode callbacks
-    - JSON file export for human-readable viewing
+    - JSON file storage for easy viewing and editing
     """
 
     def __init__(
         self,
-        db_path: str | Path = "~/.agentica/scheduler.db",
-        json_path: str | Path | None = None,
+        json_path: str | Path = "~/.agentica/data/scheduler.json",
         executor: Any = None,
         # Dependency injection callbacks for main mode
         on_system_event: OnSystemEventCallback | None = None,
         run_heartbeat: RunHeartbeatCallback | None = None,
         report_to_main: ReportToMainCallback | None = None,
-        # Auto export to JSON after changes
-        auto_export_json: bool = True,
     ):
         """Initialize scheduler service.
 
         Args:
-            db_path: Path to SQLite database for persistence
-            json_path: Path to JSON file for human-readable export
+            json_path: Path to JSON file for storage
             executor: Job executor (implements execute(job) -> Any)
             on_system_event: Callback to inject system event into main session
             run_heartbeat: Callback to trigger heartbeat in main session
             report_to_main: Callback to report isolated execution result to main session
-            auto_export_json: Whether to auto-export to JSON after job changes
         """
-        db_path = Path(db_path).expanduser()
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path = Path(json_path).expanduser()
+        json_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.store = JobStore(db_path, json_path)
+        self.store = JsonJobStore(json_path)
         self.events = EventEmitter()
         self.deps = SchedulerServiceDeps(executor=executor)
         self.state = SchedulerServiceState()
@@ -90,7 +85,6 @@ class SchedulerService:
         self.on_system_event = on_system_event
         self.run_heartbeat = run_heartbeat
         self.report_to_main = report_to_main
-        self.auto_export_json = auto_export_json
 
     async def start(self) -> None:
         """Start the scheduler service."""
@@ -110,10 +104,6 @@ class SchedulerService:
 
         # Arm timer for first wake
         await timer.arm_timer(self)
-        
-        # Initial JSON export
-        if self.auto_export_json:
-            await self.store.export_to_json()
 
         emit_job_event(self.events, EventTypes.SCHEDULER_STARTED, "")
         logger.info("Scheduler service started")
@@ -132,10 +122,6 @@ class SchedulerService:
                 await self.state.timer_task
             except asyncio.CancelledError:
                 pass
-
-        # Final JSON export
-        if self.auto_export_json:
-            await self.store.export_to_json()
 
         # Close store
         await self.store.close()
@@ -169,10 +155,6 @@ class SchedulerService:
         # Re-arm timer if needed
         if self.state.running:
             await timer.arm_timer(self)
-        
-        # Export to JSON
-        if self.auto_export_json:
-            await self.store.export_to_json()
 
         return created_job
 
@@ -191,10 +173,6 @@ class SchedulerService:
         # Re-arm timer if schedule changed
         if updated_job and self.state.running and patch.schedule is not None:
             await timer.arm_timer(self)
-        
-        # Export to JSON
-        if updated_job and self.auto_export_json:
-            await self.store.export_to_json()
 
         return updated_job
 
@@ -211,10 +189,6 @@ class SchedulerService:
 
         if result.removed and self.state.running:
             await timer.arm_timer(self)
-        
-        # Export to JSON
-        if result.removed and self.auto_export_json:
-            await self.store.export_to_json()
 
         return result
 
@@ -615,10 +589,10 @@ class SchedulerService:
     # ============== JSON Export ==============
 
     async def export_to_json(self) -> Path:
-        """Export all jobs to JSON file for human-readable viewing.
+        """Export all jobs to JSON file.
 
         Returns:
-            Path to the exported JSON file
+            Path to the JSON file
         """
         await self.store.export_to_json()
         return await self.store.get_json_path()
@@ -642,7 +616,7 @@ class SchedulerService:
         return count
 
     async def get_json_path(self) -> Path:
-        """Get the path to the JSON export file.
+        """Get the path to the JSON file.
 
         Returns:
             Path to JSON file
