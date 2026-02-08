@@ -175,6 +175,9 @@ class AgentService:
         elif self.model_provider == "yi":
             from agentica import Yi
             return Yi(**params)
+        elif self.model_provider == 'doubao':
+            from agentica import Doubao
+            return Doubao(**params)
         elif self.model_provider == "azure":
             from agentica import AzureOpenAIChat
             return AzureOpenAIChat(**params)
