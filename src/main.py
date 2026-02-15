@@ -10,6 +10,7 @@ import shutil
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from loguru import logger
 from uuid import uuid4
@@ -144,6 +145,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 挂载静态文件目录（CSS/JS）
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
 # ============== Pydantic Models ==============

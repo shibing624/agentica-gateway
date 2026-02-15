@@ -15,8 +15,8 @@ from typing import Optional, Callable, List, Any, Dict
 from loguru import logger
 from agentica import DeepAgent
 from agentica.run_response import AgentCancelledError
-from agentica.db import SqliteDb
 from agentica.workspace import Workspace
+from agentica.agent.config import WorkspaceMemoryConfig, ToolConfig, PromptConfig
 
 from ..config import settings
 
@@ -43,21 +43,6 @@ class AgentService:
     - 会话历史管理（数据库存储，按 session_id 隔离）
     - 多用户支持（按 user_id 隔离 Workspace 记忆）
     - 调度器工具集成
-    
-    架构设计：
-    ┌─────────────────────────────────────────────────────┐
-    │                    Agent                            │
-    ├─────────────────────────────────────────────────────┤
-    │  Workspace (配置层 - 按 user_id 隔离)                │
-    │  ├── AGENT.md, PERSONA.md, TOOLS.md → 全局共享      │
-    │  └── users/{user_id}/                              │
-    │      ├── USER.md                    → 用户配置      │
-    │      ├── MEMORY.md                  → 长期记忆      │
-    │      └── memory/                    → 日记忆        │
-    ├─────────────────────────────────────────────────────┤
-    │  SqliteDb (运行时层 - 按 session_id 隔离)            │
-    │  └── 会话历史 (messages, runs)                      │
-    └─────────────────────────────────────────────────────┘
     """
 
     def __init__(
@@ -68,25 +53,14 @@ class AgentService:
         extra_tools: Optional[List[Any]] = None,
         extra_instructions: Optional[List[str]] = None,
     ):
-        """初始化 Agent 服务
-
-        Args:
-            workspace_path: 工作空间路径
-            model_name: 模型名称
-            model_provider: 模型提供商
-            extra_tools: 额外的工具列表
-            extra_instructions: 额外的指令列表
-        """
         self.workspace_path = Path(workspace_path or settings.workspace_path).expanduser()
         self.model_name = model_name or settings.model_name
         self.model_provider = model_provider or settings.model_provider
         self.extra_tools = extra_tools or []
         self.extra_instructions = extra_instructions or []
 
-        # 延迟初始化
         self._agent: Optional[DeepAgent] = None
         self._workspace: Optional[Workspace] = None
-        self._db: Optional[SqliteDb] = None
         self._initialized = False
 
     def _ensure_initialized(self):
@@ -95,16 +69,11 @@ class AgentService:
             return
 
         try:
-            # 初始化工作空间（配置层，user_id 在调用时动态设置）
+            # 初始化工作空间
             self._workspace = Workspace(self.workspace_path)
             if not self._workspace.exists():
                 self._workspace.initialize()
                 logger.info(f"Workspace initialized at {self.workspace_path}")
-
-            # 初始化数据库（会话历史存储）
-            db_path = self.workspace_path.parent / "agent_sessions.db"
-            self._db = SqliteDb(db_file=str(db_path))
-            logger.info(f"Session database: {db_path}")
 
             # 创建模型
             model = self._create_model()
@@ -116,34 +85,30 @@ class AgentService:
 
             # 构建指令
             instructions = list(self.extra_instructions) if self.extra_instructions else []
-
-            # 添加调度器工具说明
             if scheduler_tools:
                 instructions.append(self._get_scheduler_instructions())
 
-            # 创建 DeepAgent
+            # 创建 DeepAgent（使用新版 SDK API）
             self._agent = DeepAgent(
                 model=model,
-                # 数据库配置（会话历史存储）
-                db=self._db,
-                # 工作空间配置（配置层）
                 workspace=self._workspace,
-                load_workspace_context=True,
-                load_workspace_memory=True,
-                memory_days=7,
-                # 历史记录配置
-                add_history_to_messages=True,
-                num_history_responses=4,
-                # 工具配置
                 tools=all_tools if all_tools else None,
-                tool_call_limit=40,
-                # 指令
                 instructions=instructions if instructions else None,
-                add_datetime_to_instructions=True,
-                auto_load_mcp=True,
-                run_timeout=600,
-                # 调试
-                debug_mode=settings.debug,
+                add_history_to_messages=True,
+                history_window=4,
+                debug=settings.debug,
+                long_term_memory_config=WorkspaceMemoryConfig(
+                    load_workspace_context=True,
+                    load_workspace_memory=True,
+                    memory_days=7,
+                ),
+                tool_config=ToolConfig(
+                    tool_call_limit=40,
+                    auto_load_mcp=True,
+                ),
+                prompt_config=PromptConfig(
+                    add_datetime_to_instructions=True,
+                ),
             )
 
             self._initialized = True
@@ -282,15 +247,12 @@ class AgentService:
             )
 
         try:
-            # 设置 user_id 和 session_id（动态切换）
-            self._agent.user_id = user_id
-            self._agent.session_id = session_id
-            # 同步到 Workspace
+            # 设置 Workspace 用户上下文
             if self._workspace:
                 self._workspace.set_user(user_id)
 
             # 运行 Agent
-            response = await self._agent.arun(message)
+            response = await self._agent.run(message)
 
             # 提取结果
             content = (response.content or "").strip()
@@ -360,8 +322,6 @@ class AgentService:
             )
 
         try:
-            self._agent.user_id = user_id
-            self._agent.session_id = session_id
             if self._workspace:
                 self._workspace.set_user(user_id)
 
@@ -371,7 +331,7 @@ class AgentService:
             tool_calls = 0
             last_metrics = None
 
-            async for chunk in self._agent.arun_stream(message, stream_intermediate_steps=True):
+            async for chunk in self._agent.run_stream(message, stream_intermediate_steps=True):
                 if chunk is None:
                     continue
 
@@ -497,30 +457,14 @@ class AgentService:
 
     def list_sessions(self) -> List[str]:
         """列出所有会话"""
-        self._ensure_initialized()
-
-        if self._db:
-            return self._db.get_all_session_ids()
         return []
 
     def delete_session(self, session_id: str) -> bool:
         """删除会话（清空对话后调用）"""
-        self._ensure_initialized()
-
-        if self._db:
-            self._db.delete_session(session_id=session_id)
-            return True
-        return False
+        return True
 
     def clear_session(self, session_id: str) -> bool:
-        """清除会话历史
-
-        Args:
-            session_id: 会话ID
-
-        Returns:
-            是否成功
-        """
+        """清除会话历史"""
         return self.delete_session(session_id)
 
     def save_memory(self, content: str, user_id: str = "default", long_term: bool = False):
@@ -637,12 +581,6 @@ class AgentService:
         """获取工作空间实例"""
         self._ensure_initialized()
         return self._workspace
-
-    @property
-    def db(self) -> Optional[SqliteDb]:
-        """获取数据库实例"""
-        self._ensure_initialized()
-        return self._db
 
     @property
     def agent(self) -> Optional[DeepAgent]:
