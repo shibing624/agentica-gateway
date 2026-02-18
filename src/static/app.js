@@ -14,7 +14,7 @@ let modelsData = null;
 let userScrolledUp = false;
 
 const TOOL_ICONS = {
-  ls:'📁', read_file:'📖', write_file:'✏️', edit_file:'✂️',
+  ls:'📁', read_file:'📖', write_file:'✏️', edit_file:'✂️', multi_edit_file:'✂️',
   glob:'🔍', grep:'🔎', execute:'⚡', web_search:'🌐',
   fetch_url:'🔗', write_todos:'📋', read_todos:'📋',
   task:'🤖', save_memory:'💾', default:'🔧',
@@ -175,7 +175,7 @@ function shortenFilePath(p){
 }
 
 // Tools that need HTML-rendered args (not just plain text escape)
-const RICH_TOOLS=new Set(['task','write_todos','read_todos','read_file','write_file','edit_file']);
+const RICH_TOOLS=new Set(['task','write_todos','read_todos','read_file','write_file','edit_file','multi_edit_file']);
 function isRichTool(name){return RICH_TOOLS.has(name)}
 
 // Format todo/task args as readable text
@@ -223,6 +223,15 @@ function fmtToolArgsHtml(name, args, argsStr){
     const short=shortenFilePath(f);
     const add=args._diff_add||0, del=args._diff_del||0;
     let h=`<span class="file-path" title="${esc(f)}">${esc(short)}</span>`;
+    if(add||del) h+=` <span class="diff-add">+${add}</span> <span class="diff-del">-${del}</span>`;
+    return h;
+  }
+  if(name==='multi_edit_file'){
+    const f=args.file_path||args.file||args.path||args.filename||'';
+    const short=shortenFilePath(f);
+    const add=args._diff_add||0, del=args._diff_del||0, cnt=args._edit_count||0;
+    let h=`<span class="file-path" title="${esc(f)}">${esc(short)}</span>`;
+    if(cnt) h+=` <span style="opacity:.6">${cnt} edits</span>`;
     if(add||del) h+=` <span class="diff-add">+${add}</span> <span class="diff-del">-${del}</span>`;
     return h;
   }

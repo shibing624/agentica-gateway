@@ -96,6 +96,7 @@ class AgentService:
                 instructions=instructions if instructions else None,
                 add_history_to_messages=True,
                 history_window=4,
+                work_dir=str(settings.base_dir),
                 debug=settings.debug,
                 long_term_memory_config=WorkspaceMemoryConfig(
                     load_workspace_context=True,
@@ -356,6 +357,20 @@ class AgentService:
                             fp = tool_args.get('file_path', '') or tool_args.get('file', '') or tool_args.get('path', '')
                             if fp:
                                 display_args['file_path'] = fp
+                        elif tool_name == 'multi_edit_file':
+                            edits = tool_args.get('edits', [])
+                            total_add = total_del = 0
+                            for ed in (edits if isinstance(edits, list) else []):
+                                old_s = ed.get('old_string', '')
+                                new_s = ed.get('new_string', '')
+                                total_del += old_s.count('\n') + (1 if old_s else 0)
+                                total_add += new_s.count('\n') + (1 if new_s else 0)
+                            display_args['_diff_add'] = total_add
+                            display_args['_diff_del'] = total_del
+                            display_args['_edit_count'] = len(edits) if isinstance(edits, list) else 0
+                            fp = tool_args.get('file_path', '') or tool_args.get('file', '') or tool_args.get('path', '')
+                            if fp:
+                                display_args['file_path'] = fp
                         elif tool_name == 'write_file':
                             content = tool_args.get('content', '')
                             display_args['_lines'] = content.count('\n') + (1 if content else 0)
@@ -540,6 +555,29 @@ class AgentService:
         if self._workspace:
             return self._workspace.get_user_info(user_id=user_id)
         return {"user_id": user_id}
+
+    def update_work_dir(self, new_dir: str) -> None:
+        """运行时更新 work_dir，同步到 agent 及所有内置工具实例
+
+        Args:
+            new_dir: 新的工作目录路径
+        """
+        if not self._agent:
+            return
+
+        from agentica.deep_tools import BuiltinFileTool, BuiltinExecuteTool, BuiltinTaskTool
+
+        self._agent.work_dir = new_dir
+        for tool in self._agent.tools or []:
+            if isinstance(tool, BuiltinFileTool):
+                tool.work_dir = Path(new_dir)
+            elif isinstance(tool, BuiltinExecuteTool):
+                tool._work_dir = Path(new_dir)
+                if hasattr(tool, '_shell') and tool._shell:
+                    tool._shell.work_dir = new_dir
+            elif isinstance(tool, BuiltinTaskTool):
+                tool._work_dir = new_dir
+        logger.info(f"work_dir updated to: {new_dir}")
 
     def reload_model(self, model_provider: str, model_name: str) -> None:
         """运行时切换模型

@@ -334,6 +334,8 @@ async def set_base_dir(request: BaseDirRequest):
     elif not p.is_dir():
         raise HTTPException(status_code=400, detail="该路径不是文件夹")
     settings.base_dir = p
+    if agent_service:
+        agent_service.update_work_dir(str(p))
     _add_dir_history(str(p))
     return {"status": "ok", "base_dir": str(p), "created": created}
 
