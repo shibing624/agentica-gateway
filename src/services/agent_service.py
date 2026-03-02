@@ -15,6 +15,7 @@ from typing import Optional, Callable, List, Any, Dict
 from loguru import logger
 from agentica import DeepAgent
 from agentica.run_response import AgentCancelledError
+from agentica.run_config import RunConfig
 from agentica.workspace import Workspace
 from agentica.agent.config import WorkspaceMemoryConfig, ToolConfig, PromptConfig
 
@@ -95,7 +96,7 @@ class AgentService:
                 tools=all_tools if all_tools else None,
                 instructions=instructions if instructions else None,
                 add_history_to_messages=True,
-                history_window=4,
+                history_window=14,
                 work_dir=str(settings.base_dir),
                 debug=settings.debug,
                 long_term_memory_config=WorkspaceMemoryConfig(
@@ -153,6 +154,9 @@ class AgentService:
         elif self.model_provider == 'doubao':
             from agentica import Doubao
             return Doubao(**params)
+        elif self.model_provider == "kimi":
+            from agentica import KimiChat
+            return KimiChat(**params)
         elif self.model_provider == "azure":
             from agentica import AzureOpenAIChat
             return AzureOpenAIChat(**params)
@@ -330,14 +334,10 @@ class AgentService:
             reasoning_content = ""
             tools_used = []
             tool_calls = 0
-            last_metrics = None
 
-            async for chunk in self._agent.run_stream(message, stream_intermediate_steps=True):
+            async for chunk in self._agent.run_stream(message, config=RunConfig(stream_intermediate_steps=True)):
                 if chunk is None:
                     continue
-
-                if hasattr(chunk, 'metrics') and chunk.metrics:
-                    last_metrics = chunk.metrics
 
                 # 工具调用开始
                 if chunk.event == "ToolCallStarted":
@@ -446,6 +446,21 @@ class AgentService:
                         if on_content:
                             await on_content(chunk.content)
 
+            # 流结束后从 agent.run_response 或 agent.model.usage 获取 metrics
+            # chunk.metrics 在流式中始终为 None，真正的 metrics 在流结束后才填充
+            final_metrics = None
+            if self._agent.run_response and self._agent.run_response.metrics:
+                final_metrics = self._agent.run_response.metrics
+            elif self._agent.model and hasattr(self._agent.model, 'usage') and self._agent.model.usage:
+                # 从 model.usage (Usage 对象) 构造 metrics dict
+                usage = self._agent.model.usage
+                final_metrics = {
+                    "input_tokens": [e.input_tokens for e in usage.request_usage_entries] if usage.request_usage_entries else [usage.input_tokens],
+                    "output_tokens": [e.output_tokens for e in usage.request_usage_entries] if usage.request_usage_entries else [usage.output_tokens],
+                    "total_tokens": [e.total_tokens for e in usage.request_usage_entries] if usage.request_usage_entries else [usage.total_tokens],
+                }
+            logger.debug(f"Final metrics source: run_response.metrics={self._agent.run_response.metrics is not None if self._agent.run_response else 'N/A'}, model.usage={self._agent.model.usage if self._agent.model else 'N/A'}")
+
             return ChatResult(
                 content=full_content.strip(),
                 tool_calls=tool_calls,
@@ -453,7 +468,7 @@ class AgentService:
                 user_id=user_id,
                 tools_used=tools_used,
                 reasoning=reasoning_content,
-                metrics=last_metrics,
+                metrics=final_metrics,
             )
 
         except (asyncio.CancelledError, AgentCancelledError, KeyboardInterrupt):

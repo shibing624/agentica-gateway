@@ -12,6 +12,8 @@ let serverModelName = '';
 let serverVersion = '';
 let modelsData = null;
 let userScrolledUp = false;
+let thinkingEnabled = false;
+let serverContextWindow = 128000;
 
 const TOOL_ICONS = {
   ls:'📁', read_file:'📖', write_file:'✏️', edit_file:'✂️', multi_edit_file:'✂️',
@@ -273,6 +275,14 @@ function applyTheme(t){
   else if(t==='light')d.removeAttribute('data-theme');
   else{if(matchMedia('(prefers-color-scheme:dark)').matches)d.setAttribute('data-theme','dark');else d.removeAttribute('data-theme')}
   document.getElementById('themeBtn').innerHTML=d.hasAttribute('data-theme')?'&#x2600;':'&#x263E;';
+  // Toggle highlight.js theme
+  const isDark=d.hasAttribute('data-theme');
+  const hljsLink=document.getElementById('hljs-theme');
+  if(hljsLink){
+    hljsLink.href=isDark
+      ?'https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css'
+      :'https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-light.min.css';
+  }
 }
 function toggleTheme(){
   const c=getTheme();let n;
@@ -295,6 +305,11 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(!document.getElementById('modelWrap').contains(e.target)){
       document.getElementById('modelDD').classList.remove('open');
     }
+    // Close context tooltip when clicking outside
+    if(!document.getElementById('ctxWrap').contains(e.target)){
+      const tip=document.getElementById('ctxTip');
+      if(tip) tip.classList.remove('open');
+    }
   });
   // scroll button visibility + track user scroll intent
   const chatArea=document.getElementById('chatArea');
@@ -303,9 +318,12 @@ document.addEventListener('DOMContentLoaded',()=>{
     // If user scrolled near bottom, re-enable auto-scroll
     if(isNearBottom()) userScrolledUp=false;
   });
-  // Detect user-initiated scroll (wheel / touch)
-  chatArea.addEventListener('wheel',()=>{if(streaming && !isNearBottom()) userScrolledUp=true},{passive:true});
-  chatArea.addEventListener('touchmove',()=>{if(streaming && !isNearBottom()) userScrolledUp=true},{passive:true});
+  // Detect user-initiated scroll (wheel / touch) — any upward scroll immediately triggers
+  chatArea.addEventListener('wheel',(e)=>{
+    if(streaming && e.deltaY<0){ userScrolledUp=true; updateScrollBtn(); }
+    if(streaming && e.deltaY>0 && isNearBottom()){ userScrolledUp=false; updateScrollBtn(); }
+  },{passive:true});
+  chatArea.addEventListener('touchmove',()=>{if(streaming && !isNearBottom()) userScrolledUp=true; updateScrollBtn();},{passive:true});
 });
 
 async function loadStatus(){
@@ -316,9 +334,15 @@ async function loadStatus(){
     serverProvider=d.model_provider||'';
     serverModelName=d.model_name||'';
     serverVersion=d.version||'';
+    serverContextWindow=d.context_window||128000;
     document.getElementById('modelLabel').textContent=serverModelName||serverModel;
     if(serverVersion) document.getElementById('verLabel').textContent='v'+serverVersion;
+    // Load thinking state
+    thinkingEnabled=!!(d.model_thinking&&d.model_thinking==='enabled');
+    const chk=document.getElementById('thinkingCheck');
+    if(chk) chk.checked=thinkingEnabled;
     updateDirDisplay();
+    if(curSess&&sessions[curSess]) updateTok(sessions[curSess]);
   }catch{}
 }
 
@@ -331,12 +355,24 @@ async function loadModels(){
 }
 
 function updateDirDisplay(){
-  if(serverDir){
-    const p=serverDir.split('/').filter(Boolean);
-    const short=p.length>3?'…/'+p.slice(-2).join('/'):serverDir;
+  const dir=curSess&&sessions[curSess]?sessions[curSess].dir:serverDir;
+  if(dir){
+    const p=dir.split('/').filter(Boolean);
+    const short=p.length>3?'…/'+p.slice(-2).join('/'):dir;
     document.getElementById('dirVal').textContent=short;
-    document.getElementById('dirWrap').title='Working Directory: '+serverDir+' (click to edit)';
-    document.getElementById('dirEditInput').value=serverDir;
+    document.getElementById('dirWrap').title='Working Directory: '+dir+' (click to edit)';
+    document.getElementById('dirEditInput').value=dir;
+  }
+}
+
+function updateDirDisplayForSession(s){
+  const dir=(s&&s.dir)?s.dir:serverDir;
+  if(dir){
+    const p=dir.split('/').filter(Boolean);
+    const short=p.length>3?'…/'+p.slice(-2).join('/'):dir;
+    document.getElementById('dirVal').textContent=short;
+    document.getElementById('dirWrap').title='Working Directory: '+dir+' (click to edit)';
+    document.getElementById('dirEditInput').value=dir;
   }
 }
 
@@ -349,6 +385,11 @@ function renderModelDD(){
   if(!modelsData)return;
   const dd=document.getElementById('modelDD');
   let h='';
+  // Custom model input at top
+  h+=`<div class="dd-custom">
+    <input type="text" id="customModelInput" class="dd-custom-input" placeholder="provider/model_name" onkeydown="if(event.key==='Enter')applyCustomModel()">
+    <button class="dd-custom-btn" onclick="applyCustomModel()" title="Apply">&#x2713;</button>
+  </div>`;
   for(const [prov, models] of Object.entries(modelsData.providers)){
     h+=`<div class="dd-group"><div class="dd-group-title">${esc(prov)}</div>`;
     for(const m of models){
@@ -362,10 +403,28 @@ function renderModelDD(){
   dd.innerHTML=h;
 }
 
+function applyCustomModel(){
+  const inp=document.getElementById('customModelInput');
+  const val=(inp?inp.value:'').trim();
+  if(!val)return;
+  const slash=val.indexOf('/');
+  let provider,name;
+  if(slash>0){
+    provider=val.slice(0,slash).trim();
+    name=val.slice(slash+1).trim();
+  } else {
+    provider=serverProvider||'openai';
+    name=val;
+  }
+  if(!name)return;
+  switchModel(provider,name);
+}
+
 async function switchModel(provider, name){
   document.getElementById('modelDD').classList.remove('open');
   if(provider===serverProvider && name===serverModelName) return;
-  document.getElementById('modelLabel').textContent=name+' ⏳';
+  document.getElementById('modelLabel').textContent=name+' ...';
+  const t0=performance.now();
   try{
     const r=await fetch(`${API}/api/model`,{
       method:'POST',
@@ -379,9 +438,36 @@ async function switchModel(provider, name){
       serverModel=d.model;
       document.getElementById('modelLabel').textContent=name;
       if(modelsData){modelsData.current_provider=provider;modelsData.current_name=name;renderModelDD()}
+      showConfigRestart(t0);
+      loadStatus();
     }
   }catch(e){
     document.getElementById('modelLabel').textContent=serverModelName||'-';
+  }
+}
+
+function showConfigRestart(t0){
+  const ms=Math.round(performance.now()-t0);
+  showToast(`Session restarted due to config update · ${ms}ms`,2000);
+}
+
+async function toggleThinking(){
+  const chk=document.getElementById('thinkingCheck');
+  const enabled=chk.checked;
+  const t0=performance.now();
+  try{
+    const r=await fetch(`${API}/api/config/thinking`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled}),
+    });
+    const d=await r.json();
+    if(d.status==='ok'){
+      thinkingEnabled=enabled;
+      showConfigRestart(t0);
+    }
+  }catch{
+    chk.checked=!enabled;
   }
 }
 
@@ -397,12 +483,27 @@ function showToast(msg, duration=2500){
 
 // ============ WORKING DIR ============
 let dirHistory=[];
+let _dirModalForNewSession=false;
 
 function openDirModal(){
   const overlay=document.getElementById('dirModalOverlay');
   overlay.classList.add('open');
   const inp=document.getElementById('dirEditInput');
-  inp.value=serverDir;
+  const title=document.getElementById('dirModalTitle');
+  const desc=document.getElementById('dirModalDesc');
+  const saveBtn=document.getElementById('dirSaveBtn');
+  if(_dirModalForNewSession){
+    inp.value=serverDir||'';
+    if(title) title.textContent='Create New Session';
+    if(desc){desc.textContent='Input or select the working directory for this session.';desc.style.display='';}
+    if(saveBtn) saveBtn.textContent='Create';
+  } else {
+    const curDir=(curSess&&sessions[curSess]&&sessions[curSess].dir)?sessions[curSess].dir:serverDir;
+    inp.value=curDir||'';
+    if(title) title.textContent='Working Directory';
+    if(desc) desc.style.display='none';
+    if(saveBtn) saveBtn.textContent='Save';
+  }
   closeDirHistoryDD();
   loadDirHistory();
   setTimeout(()=>inp.focus(),50);
@@ -410,6 +511,7 @@ function openDirModal(){
 
 function closeDirModal(e){
   if(e&&e.target!==e.currentTarget)return;
+  _dirModalForNewSession=false;
   closeDirHistoryDD();
   document.getElementById('dirModalOverlay').classList.remove('open');
 }
@@ -474,6 +576,11 @@ function selectDirHistory(path){
   document.getElementById('dirEditInput').focus();
 }
 
+function openDirModalForNewSession(){
+  _dirModalForNewSession=true;
+  openDirModal();
+}
+
 async function saveDir(){
   const inp=document.getElementById('dirEditInput');
   const val=inp.value.trim();
@@ -492,9 +599,24 @@ async function saveDir(){
     const d=await r.json();
     if(d.status==='ok'){
       serverDir=d.base_dir;
-      updateDirDisplay();
       loadDirHistory();
       if(d.created) showToast('已自动创建文件夹: '+d.base_dir);
+
+      if(_dirModalForNewSession){
+        // 创建新 session 并绑定此目录
+        _dirModalForNewSession=false;
+        document.getElementById('dirModalOverlay').classList.remove('open');
+        createSessionWithDir(d.base_dir);
+        return;
+      }
+
+      // 更新当前 session 的 dir
+      if(curSess&&sessions[curSess]){
+        sessions[curSess].dir=d.base_dir;
+        save();
+        renderSidebar();
+      }
+      updateDirDisplay();
     }
   }catch{
     showToast('保存失败，请检查路径');
@@ -506,7 +628,8 @@ async function saveDir(){
 function copyDir(){
   const inp=document.getElementById('dirEditInput');
   const val=inp?inp.value.trim():'';
-  const text=val||serverDir;
+  const curDir=(curSess&&sessions[curSess]&&sessions[curSess].dir)?sessions[curSess].dir:serverDir;
+  const text=val||curDir;
   if(!text)return;
   // Use clipboard API with fallback for non-HTTPS
   if(navigator.clipboard&&window.isSecureContext){
@@ -522,22 +645,24 @@ function copyDir(){
 }
 
 function openInFinder(){
-  if(!serverDir)return;
+  const dir=(curSess&&sessions[curSess]&&sessions[curSess].dir)?sessions[curSess].dir:serverDir;
+  if(!dir)return;
   fetch(`${API}/api/open`,{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({path:serverDir,app:'finder'}),
+    body:JSON.stringify({path:dir,app:'finder'}),
   }).catch(()=>{
-    window.open('file://'+serverDir,'_blank');
+    window.open('file://'+dir,'_blank');
   });
 }
 
 function openInTerminal(){
-  if(!serverDir)return;
+  const dir=(curSess&&sessions[curSess]&&sessions[curSess].dir)?sessions[curSess].dir:serverDir;
+  if(!dir)return;
   fetch(`${API}/api/open`,{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({path:serverDir,app:'terminal'}),
+    body:JSON.stringify({path:dir,app:'terminal'}),
   }).catch(()=>{});
 }
 
@@ -602,8 +727,13 @@ function save(){localStorage.setItem('ag_s',JSON.stringify(sessions))}
 
 function newSession(){
   if(streaming)return;
+  // 弹出目录选择弹窗，选完后创建 session
+  openDirModalForNewSession();
+}
+
+function createSessionWithDir(dir){
   const id=uid();
-  sessions[id]={title:'New Chat',msgs:[],ts:Date.now(),tokIn:0,tokOut:0,dir:''};
+  sessions[id]={title:'New Chat',msgs:[],ts:Date.now(),tokIn:0,tokOut:0,tokTotal:0,requests:0,totalTime:0,usageEntries:[],lastInputTokens:0,dir:dir||serverDir||''};
   save();switchTo(id);renderSidebar();
   document.getElementById('inputTa').focus();
 }
@@ -613,6 +743,7 @@ function switchTo(id){
   localStorage.setItem('ag_a',id);
   const s=sessions[id];
   updateTok(s);
+  updateDirDisplayForSession(s);
   renderSidebar();renderChat();
 }
 
@@ -656,9 +787,10 @@ function renderSidebar(){
   el.innerHTML=ids.map(id=>{
     const s=sessions[id];const act=id===curSess?'active':'';
     const n=s.msgs?s.msgs.filter(m=>m.role==='user').length:0;
+    const dirShort=s.dir?shortenPath(s.dir):'';
     return `<div class="s-item ${act}" onclick="switchTo('${id}')">
       <div class="ti">${esc(s.title)}</div>
-      <div class="mt">${n} msg · ${ago(s.ts)}</div>
+      <div class="mt">${n} msg · ${ago(s.ts)}${dirShort?' · <span class="s-dir" title="'+esc(s.dir)+'">'+esc(dirShort)+'</span>':''}</div>
       <button class="db" onclick="delSession('${id}',event)" title="Delete">&#x2715;</button>
     </div>`;
   }).join('');
@@ -666,24 +798,73 @@ function renderSidebar(){
 
 function updateTok(s){
   const ti=s?s.tokIn:0, to=s?s.tokOut:0;
-  document.getElementById('tokIn').textContent=fmtN(ti);
-  document.getElementById('tokOut').textContent=fmtN(to);
-  const tip=document.getElementById('tokTip');
+  const reqs=s?s.requests||0:0;
+  const totalTime=s?s.totalTime||0:0;
+  const ctxWin=serverContextWindow||128000;
+  // 用最近一次请求的 input_tokens 表示当前上下文实际占用
+  const lastIn=s?s.lastInputTokens||0:0;
+
+  // 计算上下文使用百分比（fallback 到累计 tokIn 如果 lastIn 为 0）
+  const ctxIn=lastIn>0?lastIn:ti;
+  const pct=ctxWin>0&&ctxIn>0?Math.min(Math.round((ctxIn/ctxWin)*100),100):0;
+
+  // 主显示：xx% context
+  const mainEl=document.getElementById('ctxMain');
+  if(mainEl){
+    mainEl.textContent=pct+'% context';
+    mainEl.classList.remove('ctx-warn','ctx-danger');
+    if(pct>=95) mainEl.classList.add('ctx-danger');
+    else if(pct>=80) mainEl.classList.add('ctx-warn');
+  }
+
+  // 详细 tooltip
+  const tip=document.getElementById('ctxTip');
   if(tip){
-    const total=ti+to;
-    tip.textContent=`Input: ${ti.toLocaleString()} tokens · Output: ${to.toLocaleString()} tokens · Total: ${total.toLocaleString()}`;
+    let html=`<div class="ctx-tip-header">Token Usage</div>`;
+    html+=`<div class="ctx-tip-row"><span>Last Input</span><span>${fmtN(lastIn)}</span></div>`;
+    html+=`<div class="ctx-tip-row"><span>Total In</span><span>${fmtN(ti)}</span></div>`;
+    html+=`<div class="ctx-tip-row"><span>Total Out</span><span>${fmtN(to)}</span></div>`;
+    html+=`<div class="ctx-tip-row ctx-tip-total"><span>Context Window</span><span>${fmtN(ctxWin)}</span></div>`;
+    if(reqs>0) html+=`<div class="ctx-tip-row"><span>Requests</span><span>${reqs}</span></div>`;
+    if(totalTime>0) html+=`<div class="ctx-tip-row"><span>Time</span><span>${fmtTime(totalTime)}</span></div>`;
+
+    const entries=s&&s.usageEntries?s.usageEntries:[];
+    if(entries.length>0){
+      html+=`<div class="ctx-tip-divider"></div>`;
+      html+=`<div class="ctx-tip-sub">Recent Requests</div>`;
+      const show=entries.slice(-5).reverse();
+      for(const e of show){
+        const t=e.response_time?` · ${fmtTime(e.response_time)}`:'';
+        html+=`<div class="ctx-tip-entry"><span>#${e.request_index}</span><span>${fmtN(e.input_tokens)} in / ${fmtN(e.output_tokens)} out${t}</span></div>`;
+      }
+      if(entries.length>5) html+=`<div class="ctx-tip-more">… and ${entries.length-5} more</div>`;
+    }
+    tip.innerHTML=html;
   }
 }
+function fmtTime(sec){if(!sec)return'0s';if(sec<60)return sec.toFixed(1)+'s';const m=Math.floor(sec/60);const s=sec%60;return m+'m'+s.toFixed(0)+'s'}
 function fmtN(n){if(!n)return'0';if(n>=1000)return(n/1000).toFixed(1)+'K';return String(n)}
+
+// Toggle context tooltip on click
+function toggleCtxTip(){
+  const tip=document.getElementById('ctxTip');
+  if(tip) tip.classList.toggle('open');
+}
 
 // ============ CHAT RENDER ============
 function renderChat(){
   const c=document.getElementById('messages');
   if(!curSess||!sessions[curSess]||!sessions[curSess].msgs.length){
-    c.innerHTML=`<div class="welcome"><img class="w-icon-img" src="${document.querySelector('.brand-logo').src}" alt="logo"><h2>Agentica</h2><p>AI Agent — send a message to get started.</p></div>`;
+    if(!curSess||!sessions[curSess]){
+      // 没有 session — 显示引导选择目录
+      c.innerHTML=`<div class="welcome"><img class="w-icon-img" src="${document.querySelector('.brand-logo').src}" alt="logo"><h2>Agentica</h2><p>选择一个项目目录开始工作</p><button class="open-folder-btn" onclick="newSession()">Open Folder</button></div>`;
+    } else {
+      c.innerHTML=`<div class="welcome"><img class="w-icon-img" src="${document.querySelector('.brand-logo').src}" alt="logo"><h2>Agentica</h2><p>AI Agent — send a message to get started.</p></div>`;
+    }
     return;
   }
   c.innerHTML=sessions[curSess].msgs.map(renderMsg).join('');
+  highlightCode(c);
   scrollEnd();
 }
 
@@ -842,10 +1023,11 @@ function updateScrollBtn(){
   const btn=document.getElementById('scrollBottomBtn');
   if(!btn)return;
   const a=document.getElementById('chatArea');
-  // Show button when scrolled up more than ~half a screen
-  const threshold=a.clientHeight*0.5;
-  const far=(a.scrollHeight - a.scrollTop - a.clientHeight) > threshold;
-  btn.classList.toggle('visible', far);
+  // During streaming: show immediately when user scrolls up at all
+  // Otherwise: show when scrolled up more than ~half a screen
+  const dist=a.scrollHeight - a.scrollTop - a.clientHeight;
+  const show=streaming && userScrolledUp ? dist>30 : dist>a.clientHeight*0.5;
+  btn.classList.toggle('visible', show);
 }
 
 // ============ SEND / STREAM ============
@@ -863,7 +1045,11 @@ async function sendMessage(){
   if(!text&&!pendingFiles.length)return;
   if(streaming)return;
 
-  if(!curSess)newSession();
+  if(!curSess){
+    // 没有 session 时弹出目录选择弹窗
+    openDirModalForNewSession();
+    return;
+  }
   const s=sessions[curSess];
 
   // upload files first
@@ -906,7 +1092,7 @@ async function sendMessage(){
     const resp=await fetch(`${API}/api/chat/stream`,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message:text,session_id:curSess,user_id:'default'}),
+      body:JSON.stringify({message:text,session_id:curSess,user_id:'default',work_dir:s.dir||serverDir||''}),
       signal:abortCtrl.signal,
     });
     const reader=resp.body.getReader();
@@ -960,18 +1146,49 @@ async function sendMessage(){
             approxOut+=Math.ceil(evt.data.length/3.5);
             updateLiveContent(aiMsg);
           } else if(evt.event==='done'){
-            if(evt.data){
-              const gotIn=evt.data.input_tokens||0;
-              const gotOut=evt.data.output_tokens||0;
-              if(gotIn>0||gotOut>0){
-                s.tokIn=(s.tokIn||0)+gotIn;
-                s.tokOut=(s.tokOut||0)+gotOut;
-              } else {
-                s.tokIn=(s.tokIn||0)+approxIn;
-                s.tokOut=(s.tokOut||0)+approxOut;
-              }
-              updateTok(s);
-            }
+                            console.log('[done] evt.data:', JSON.stringify(evt.data));
+                            if(evt.data){
+                              const gotIn=evt.data.input_tokens||0;
+                              const gotOut=evt.data.output_tokens||0;
+                              const gotTotal=evt.data.total_tokens||0;
+                              const gotReqs=evt.data.requests||0;
+                              const gotTime=evt.data.response_time||0;
+                              const entries=evt.data.request_entries||[];
+                              if(evt.data.context_window) serverContextWindow=evt.data.context_window;
+                              if(gotIn>0||gotOut>0){
+                                s.tokIn=(s.tokIn||0)+gotIn;
+                                s.tokOut=(s.tokOut||0)+gotOut;
+                                s.tokTotal=(s.tokTotal||0)+(gotTotal||(gotIn+gotOut));
+                              } else {
+                                s.tokIn=(s.tokIn||0)+approxIn;
+                                s.tokOut=(s.tokOut||0)+approxOut;
+                                s.tokTotal=(s.tokTotal||0)+approxIn+approxOut;
+                              }
+                              // 保存最后一次请求的 input_tokens（代表当前上下文实际占用）
+                              if(entries.length>0){
+                                const lastEntry=entries[entries.length-1];
+                                s.lastInputTokens=lastEntry.input_tokens||gotIn||0;
+                              } else if(gotIn>0){
+                                s.lastInputTokens=gotIn;
+                              } else {
+                                // fallback: 用近似值
+                                s.lastInputTokens=approxIn;
+                              }
+                              console.log('[done] lastInputTokens:', s.lastInputTokens, 'contextWindow:', serverContextWindow);
+                              s.requests=(s.requests||0)+(gotReqs||1);
+                              s.totalTime=(s.totalTime||0)+gotTime;
+                              if(!s.usageEntries) s.usageEntries=[];
+                              const baseIdx=s.usageEntries.length;
+                              for(let i=0;i<entries.length;i++){
+                                s.usageEntries.push({...entries[i],request_index:baseIdx+i+1});
+                              }
+                              if(!entries.length){
+                                const entryIn=gotIn||approxIn;
+                                const entryOut=gotOut||approxOut;
+                                s.usageEntries.push({request_index:baseIdx+1,input_tokens:entryIn,output_tokens:entryOut,total_tokens:gotTotal||(entryIn+entryOut),response_time:gotTime||undefined});
+                              }
+                              updateTok(s);
+                            }
           } else if(evt.event==='error'){
             aiMsg.content+='\n\n**Error:** '+evt.data;
             updateLiveContent(aiMsg);
@@ -1014,7 +1231,7 @@ function appendLive(){
 
 function updateLiveContent(msg){
   const el=document.getElementById('live-bub');
-  if(el){el.innerHTML=md(msg.content);autoScroll()}
+  if(el){el.innerHTML=md(msg.content);highlightCode(el);autoScroll()}
 }
 
 function updateLiveSteps(msg){
@@ -1176,7 +1393,14 @@ function md(text){
   h=h.replace(/\\\((.*?)\\\)/g,(_,m)=>{mathBlocks.push({tex:m.trim(),display:false});return `%%MATH${mathBlocks.length-1}%%`});
 
   h=h.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  h=h.replace(/```(\w*)\n([\s\S]*?)```/g,(_,lang,code)=>`<pre><code class="lang-${lang}">${code.trim()}</code></pre>`);
+
+  // Extract code blocks first to protect them from \n -> <br> conversion
+  const codeBlocks=[];
+  h=h.replace(/```(\w*)\n([\s\S]*?)```/g,(_,lang,code)=>{
+    codeBlocks.push(`<pre><code class="${lang?'language-'+lang:''}">${code.trim()}</code></pre>`);
+    return `%%CODE${codeBlocks.length-1}%%`;
+  });
+
   h=h.replace(/`([^`]+)`/g,'<code>$1</code>');
   h=h.replace(/^###### (.+)$/gm,'<h6>$1</h6>');
   h=h.replace(/^##### (.+)$/gm,'<h5>$1</h5>');
@@ -1212,6 +1436,9 @@ function md(text){
   h=h.replace(/<br>(<(?:ul|ol|h[1-6]|pre|table|blockquote|hr)[^>]*>)/g,'$1');
   h=h.replace(/(<\/(?:ul|ol|h[1-6]|pre|table|blockquote|hr)>)<br>/g,'$1');
 
+  // Restore code blocks (protected from <br> conversion)
+  h=h.replace(/%%CODE(\d+)%%/g,(_,i)=>codeBlocks[parseInt(i)]||'');
+
   // Render LaTeX math
   h=h.replace(/%%MATH(\d+)%%/g,(_,i)=>{
     const m=mathBlocks[parseInt(i)];
@@ -1230,3 +1457,9 @@ function md(text){
 function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function ago(ts){const d=Date.now()-ts;const m=Math.floor(d/60000);if(m<1)return'now';if(m<60)return m+'m';const h=Math.floor(m/60);if(h<24)return h+'h';return Math.floor(h/24)+'d'}
 function toggleSidebar(){document.getElementById('sidebar').classList.toggle('collapsed')}
+function highlightCode(root){
+  if(typeof hljs==='undefined')return;
+  (root||document).querySelectorAll('pre code').forEach(el=>{
+    if(!el.dataset.highlighted) hljs.highlightElement(el);
+  });
+}

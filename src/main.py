@@ -1,6 +1,7 @@
 """FastAPI 主入口"""
 import asyncio
 import json as json_mod
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -158,6 +159,7 @@ class ChatRequest(BaseModel):
     session_id: str = "default"
     user_id: str = "default"
     agent_id: str = "main"
+    work_dir: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -219,7 +221,7 @@ async def root():
     """根路径"""
     return {
         "name": "Agentica Gateway",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "status": "running",
     }
 
@@ -228,7 +230,10 @@ async def root():
 async def web_chat():
     """Web Chat 页面"""
     html_path = Path(__file__).parent / "static" / "index.html"
-    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+    return HTMLResponse(
+        content=html_path.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.get("/health")
@@ -256,12 +261,19 @@ async def status():
         status = await scheduler.status()
         scheduler_status = status.to_dict()
 
+    # 获取模型上下文窗口大小
+    context_window = 128000
+    if agent_service and agent_service._agent and agent_service._agent.model:
+        context_window = getattr(agent_service._agent.model, 'context_window', 128000)
+
     return {
         "workspace": str(settings.workspace_path),
         "base_dir": str(settings.base_dir),
         "model": f"{agent_service.model_provider}/{agent_service.model_name}" if agent_service else f"{settings.model_provider}/{settings.model_name}",
         "model_provider": agent_service.model_provider if agent_service else settings.model_provider,
         "model_name": agent_service.model_name if agent_service else settings.model_name,
+        "model_thinking": settings.model_thinking or "",
+        "context_window": context_window,
         "version": "0.1.1",
         "channels": channel_manager.get_status() if channel_manager else {},
         "scheduler": scheduler_status,
@@ -314,6 +326,27 @@ async def switch_model(request: ModelSwitchRequest):
     }
 
 
+class ThinkingToggleRequest(BaseModel):
+    """Thinking 模式切换请求"""
+    enabled: bool
+
+
+@app.post("/api/config/thinking")
+async def toggle_thinking(request: ThinkingToggleRequest):
+    """切换 thinking 模式"""
+    new_val = "enabled" if request.enabled else ""
+    settings.model_thinking = new_val
+    if agent_service:
+        agent_service.reload_model(settings.model_provider, settings.model_name)
+    return {"status": "ok", "thinking": new_val}
+
+
+@app.get("/api/config/thinking")
+async def get_thinking():
+    """获取当前 thinking 模式"""
+    return {"thinking": settings.model_thinking or ""}
+
+
 class BaseDirRequest(BaseModel):
     """Working directory 修改请求"""
     base_dir: str
@@ -338,6 +371,20 @@ async def set_base_dir(request: BaseDirRequest):
         agent_service.update_work_dir(str(p))
     _add_dir_history(str(p))
     return {"status": "ok", "base_dir": str(p), "created": created}
+
+
+def _switch_work_dir(work_dir: str):
+    """切换 Agent 工作目录（per-session 调用）"""
+    p = Path(work_dir).expanduser()
+    if not p.is_dir():
+        return
+    current = str(settings.base_dir)
+    if str(p) == current:
+        return
+    settings.base_dir = p
+    if agent_service:
+        agent_service.update_work_dir(str(p))
+    _add_dir_history(str(p))
 
 
 # ---- Dir history management ----
@@ -432,6 +479,10 @@ async def chat(request: ChatRequest):
     if not agent_service:
         raise HTTPException(status_code=503, detail="Service not ready")
 
+    # 按 session 的 work_dir 切换工作目录
+    if request.work_dir:
+        _switch_work_dir(request.work_dir)
+
     result = await agent_service.chat(
         message=request.message,
         session_id=request.session_id,
@@ -452,6 +503,10 @@ async def chat_stream(request: ChatRequest):
     if not agent_service:
         raise HTTPException(status_code=503, detail="Service not ready")
 
+    # 按 session 的 work_dir 切换工作目录
+    if request.work_dir:
+        _switch_work_dir(request.work_dir)
+
     async def event_generator():
         queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
@@ -468,6 +523,7 @@ async def chat_stream(request: ChatRequest):
             await queue.put({"event": "thinking", "data": delta})
 
         async def run_agent():
+            _t0 = time.time()
             try:
                 result = await agent_service.chat_stream(
                     message=request.message,
@@ -478,22 +534,62 @@ async def chat_stream(request: ChatRequest):
                     on_tool_result=on_tool_result,
                     on_thinking=on_thinking,
                 )
+                _elapsed = round(time.time() - _t0, 2)
                 # 发送完成事件（包含 token 使用量等元信息）
                 # metrics 来自 agentica，格式为 {key: [values...]}, 需要 sum
                 raw_metrics = result.metrics or {}
+                logger.debug(f"Stream done metrics: {raw_metrics}")
                 def _sum_metric(key):
                     v = raw_metrics.get(key, 0)
                     if isinstance(v, list):
                         return sum(x for x in v if isinstance(x, (int, float)))
                     return v if isinstance(v, (int, float)) else 0
 
+                def _list_metric(key):
+                    v = raw_metrics.get(key, [])
+                    if isinstance(v, list):
+                        return [x for x in v if isinstance(x, (int, float))]
+                    return [v] if isinstance(v, (int, float)) else []
+
+                input_tokens = _sum_metric("input_tokens")
+                output_tokens = _sum_metric("output_tokens")
+                total_tokens = _sum_metric("total_tokens")
+                logger.debug(f"Token usage: in={input_tokens}, out={output_tokens}, total={total_tokens}")
+
+                # 构建 per-request entries（参考 agentica Usage.request_usage_entries）
+                in_list = _list_metric("input_tokens")
+                out_list = _list_metric("output_tokens")
+                tot_list = _list_metric("total_tokens")
+                time_list = _list_metric("time")
+                requests_count = max(len(in_list), len(out_list), 1)
+                request_entries = []
+                for i in range(requests_count):
+                    entry = {
+                        "request_index": i + 1,
+                        "input_tokens": in_list[i] if i < len(in_list) else 0,
+                        "output_tokens": out_list[i] if i < len(out_list) else 0,
+                        "total_tokens": tot_list[i] if i < len(tot_list) else 0,
+                    }
+                    if i < len(time_list):
+                        entry["response_time"] = round(time_list[i], 3)
+                    request_entries.append(entry)
+
+                # 获取模型上下文窗口
+                _ctx_window = 128000
+                if agent_service and agent_service._agent and agent_service._agent.model:
+                    _ctx_window = getattr(agent_service._agent.model, 'context_window', 128000)
+
                 await queue.put({"event": "done", "data": {
                     "session_id": result.session_id,
                     "tool_calls": result.tool_calls,
                     "tools_used": result.tools_used,
-                    "input_tokens": _sum_metric("input_tokens"),
-                    "output_tokens": _sum_metric("output_tokens"),
-                    "total_tokens": _sum_metric("total_tokens"),
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                    "requests": requests_count,
+                    "response_time": _elapsed,
+                    "request_entries": request_entries,
+                    "context_window": _ctx_window,
                 }})
             except asyncio.CancelledError:
                 # 用户中止 — 不发 error 事件，直接结束
