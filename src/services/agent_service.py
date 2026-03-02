@@ -127,14 +127,18 @@ class AgentService:
 
     def _create_model(self) -> Any:
         """创建模型实例"""
+        # Anthropic 协议的 provider（Claude, KimiChat）
+        _ANTHROPIC_PROVIDERS = {"kimi", "anthropic", "claude"}
+
         params: dict[str, Any] = {"id": self.model_name, "timeout": 300}
 
-        # 构建 extra_body（思考模式等）
+        # thinking 参数：Anthropic 协议用顶层 thinking，OpenAI 协议用 extra_body
         if settings.model_thinking and settings.model_thinking in ("enabled", "disabled", "auto"):
-            params["extra_body"] = {
-                "thinking": {"type": settings.model_thinking}
-            }
-            logger.info(f"Model thinking mode: {settings.model_thinking}")
+            if self.model_provider in _ANTHROPIC_PROVIDERS:
+                params["thinking"] = {"type": settings.model_thinking, "budget_tokens": 8000}
+            else:
+                params["extra_body"] = {"thinking": {"type": settings.model_thinking}}
+            logger.info(f"Model thinking mode: {settings.model_thinking} (provider={self.model_provider})")
 
         if self.model_provider == "zhipuai":
             from agentica import ZhipuAI
@@ -157,6 +161,9 @@ class AgentService:
         elif self.model_provider == "kimi":
             from agentica import KimiChat
             return KimiChat(**params)
+        elif self.model_provider in ("anthropic", "claude"):
+            from agentica import Claude
+            return Claude(**params)
         elif self.model_provider == "azure":
             from agentica import AzureOpenAIChat
             return AzureOpenAIChat(**params)

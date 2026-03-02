@@ -287,6 +287,8 @@ SUPPORTED_MODELS = {
     "moonshot": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
     "yi": ["yi-lightning", "yi-large", "yi-medium", "yi-spark"],
     "doubao": ["doubao-1.5-pro-32k", "doubao-pro-32k", "doubao-lite-32k"],
+    "kimi": ["k2p5", "k1.5-long", "k1.5-short"],
+    "anthropic": ["claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
     "azure": ["gpt-4o", "gpt-4-turbo", "gpt-35-turbo"],
 }
 
