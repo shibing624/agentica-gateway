@@ -593,7 +593,7 @@ async function saveDir(){
     });
     if(!r.ok){
       const err=await r.json().catch(()=>null);
-      showToast(err?.detail||'文件夹路径不存在，需要写一个存在的路径');
+      showToast(err?.detail||'设置工作目录失败，请检查路径是否正确');
       return;
     }
     const d=await r.json();
@@ -1392,14 +1392,23 @@ function md(text){
   h=h.replace(/\$([^\$\n]+?)\$/g,(_,m)=>{mathBlocks.push({tex:m.trim(),display:false});return `%%MATH${mathBlocks.length-1}%%`});
   h=h.replace(/\\\((.*?)\\\)/g,(_,m)=>{mathBlocks.push({tex:m.trim(),display:false});return `%%MATH${mathBlocks.length-1}%%`});
 
-  h=h.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-  // Extract code blocks first to protect them from \n -> <br> conversion
+  // Extract code blocks first to protect them from escaping and <br> conversion
   const codeBlocks=[];
   h=h.replace(/```(\w*)\n([\s\S]*?)```/g,(_,lang,code)=>{
-    codeBlocks.push(`<pre><code class="${lang?'language-'+lang:''}">${code.trim()}</code></pre>`);
+    const escaped=code.trim().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    codeBlocks.push(`<pre><code class="${lang?'language-'+lang:''}">${escaped}</code></pre>`);
     return `%%CODE${codeBlocks.length-1}%%`;
   });
+
+  // Preserve safe inline HTML tags before escaping (br, ul, ol, li, strong, em, p, table, thead, tbody, tr, th, td, hr, sub, sup, del, ins, mark)
+  const safeHtmlBlocks=[];
+  const safeTagsRe=/<\/?(br|ul|ol|li|strong|em|b|i|p|table|thead|tbody|tr|th|td|hr|sub|sup|del|ins|mark|div|span|a)(\s[^>]*)?\s*\/?>/gi;
+  h=h.replace(safeTagsRe,(m)=>{safeHtmlBlocks.push(m);return `%%SAFE${safeHtmlBlocks.length-1}%%`});
+
+  h=h.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  // Restore safe HTML tags
+  h=h.replace(/%%SAFE(\d+)%%/g,(_,i)=>safeHtmlBlocks[parseInt(i)]||'');
 
   h=h.replace(/`([^`]+)`/g,'<code>$1</code>');
   h=h.replace(/^###### (.+)$/gm,'<h6>$1</h6>');
@@ -1431,10 +1440,10 @@ function md(text){
   h=h.replace(/\n/g,'<br>');
   h='<p>'+h+'</p>';
   h=h.replace(/<p><\/p>/g,'');
-  h=h.replace(/<p>(<(?:h[1-6]|pre|table|ul|ol|blockquote|hr)[^>]*>)/g,'$1');
-  h=h.replace(/(<\/(?:h[1-6]|pre|table|ul|ol|blockquote|hr)>)<\/p>/g,'$1');
-  h=h.replace(/<br>(<(?:ul|ol|h[1-6]|pre|table|blockquote|hr)[^>]*>)/g,'$1');
-  h=h.replace(/(<\/(?:ul|ol|h[1-6]|pre|table|blockquote|hr)>)<br>/g,'$1');
+  h=h.replace(/<p>(<(?:h[1-6]|pre|table|ul|ol|blockquote|hr|div)[^>]*>)/g,'$1');
+  h=h.replace(/(<\/(?:h[1-6]|pre|table|ul|ol|blockquote|hr|div)>)<\/p>/g,'$1');
+  h=h.replace(/<br>(<(?:ul|ol|h[1-6]|pre|table|blockquote|hr|div)[^>]*>)/g,'$1');
+  h=h.replace(/(<\/(?:ul|ol|h[1-6]|pre|table|blockquote|hr|div)>)<br>/g,'$1');
 
   // Restore code blocks (protected from <br> conversion)
   h=h.replace(/%%CODE(\d+)%%/g,(_,i)=>codeBlocks[parseInt(i)]||'');

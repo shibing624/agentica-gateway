@@ -262,6 +262,21 @@ def cron_to_human(expression: str, timezone: str = "Asia/Shanghai") -> str:  # n
         minute, hour, day, month, weekday = parts
         has_seconds = False
 
+    # Second-level interval: "*/30 * * * * *"
+    if has_seconds and second.startswith("*/") and minute == "*" and hour == "*":
+        interval = second[2:]
+        return f"每隔 {interval} 秒"
+
+    # Minute-level interval: "*/30 * * * *"
+    if minute.startswith("*/") and hour == "*" and day == "*" and month == "*" and weekday == "*":
+        interval = minute[2:]
+        return f"每隔 {interval} 分钟"
+
+    # Hour-level interval
+    if hour.startswith("*/") and minute == "0" and day == "*" and month == "*" and weekday == "*":
+        interval = hour[2:]
+        return f"每隔 {interval} 小时"
+
     # Common patterns
     if day == "*" and month == "*":
         time_str = ""
@@ -285,21 +300,6 @@ def cron_to_human(expression: str, timezone: str = "Asia/Shanghai") -> str:  # n
             }
             wd = weekday_names.get(weekday, f"周{weekday}")
             return f"每{wd} {time_str}" if time_str else f"Cron: {expression}"
-
-    # Second-level interval: "*/30 * * * * *"
-    if has_seconds and second.startswith("*/") and minute == "*" and hour == "*":
-        interval = second[2:]
-        return f"每隔 {interval} 秒"
-
-    # Minute-level interval: "*/30 * * * *"
-    if minute.startswith("*/") and hour == "*" and day == "*" and month == "*" and weekday == "*":
-        interval = minute[2:]
-        return f"每隔 {interval} 分钟"
-
-    # Hour-level interval
-    if hour.startswith("*/") and minute == "0" and day == "*" and month == "*" and weekday == "*":
-        interval = hour[2:]
-        return f"每隔 {interval} 小时"
 
     return f"Cron: {expression}"
 

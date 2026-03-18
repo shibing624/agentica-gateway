@@ -21,4 +21,4 @@ COPY workspace/ ./workspace/
 EXPOSE 8789 7863
 
 # 启动命令
-CMD ["gunicorn", "src.main:app", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8789"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8789"]

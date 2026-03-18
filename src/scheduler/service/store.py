@@ -11,6 +11,7 @@ This separation ensures:
 2. Runtime state writes (high-frequency) go to SQLite with proper transactions
 3. No concurrent write issues — YAML is read-mostly, SQLite handles concurrency natively
 """
+import asyncio
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -156,23 +157,20 @@ class JobStore:
     async def initialize(self) -> None:
         """Initialize store: load YAML config, open SQLite, reconcile."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self._open_db)
+        self._load_yaml()
+        self._reconcile_state()
+        logger.info(
+            f"Store initialized: {len(self._jobs)} jobs from {self.yaml_path}"
+        )
 
-        # Open SQLite
+    def _open_db(self) -> None:
+        """Open SQLite connection (sync, called via to_thread)."""
         self._db = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.executescript(_INIT_SQL)
-
-        # Load YAML config
-        self._load_yaml()
-
-        # Reconcile: apply SQLite state to in-memory jobs
-        self._reconcile_state()
-
-        logger.info(
-            f"Store initialized: {len(self._jobs)} jobs from {self.yaml_path}"
-        )
 
     async def close(self) -> None:
         """Close store."""
@@ -306,21 +304,13 @@ class JobStore:
     # ============== Job CRUD ==============
 
     async def save(self, job: ScheduledJob) -> None:
-        """Save or update a job.
-
-        - Updates YAML (config) if this is a new job or config fields changed
-        - Always updates SQLite (state)
-        """
+        """Save or update a job."""
         job.updated_at_ms = int(datetime.now().timestamp() * 1000)
         is_new = job.id not in self._jobs
         self._jobs[job.id] = job
-
-        # Update SQLite state
-        self._upsert_state(job)
-
-        # Write YAML only for new jobs (config changes)
+        await asyncio.to_thread(self._upsert_state, job)
         if is_new:
-            self._write_yaml()
+            await asyncio.to_thread(self._write_yaml)
             logger.debug(f"Saved new job {job.id} to YAML + SQLite")
         else:
             logger.debug(f"Updated job {job.id} state in SQLite")
@@ -333,18 +323,17 @@ class JobStore:
         """Permanently delete a job."""
         if job_id not in self._jobs:
             return False
-
         del self._jobs[job_id]
+        await asyncio.to_thread(self._delete_from_db, job_id)
+        await asyncio.to_thread(self._write_yaml)
+        return True
 
-        # Remove from SQLite
+    def _delete_from_db(self, job_id: str) -> None:
+        """Remove job state and runs from SQLite (sync)."""
         assert self._db is not None
         self._db.execute("DELETE FROM job_state WHERE job_id = ?", (job_id,))
         self._db.execute("DELETE FROM job_runs WHERE job_id = ?", (job_id,))
         self._db.commit()
-
-        # Update YAML
-        self._write_yaml()
-        return True
 
     async def list_jobs(
         self,
@@ -424,10 +413,13 @@ class JobStore:
 
     async def save_run(self, run: JobRun) -> None:
         """Save a job run record."""
-        assert self._db is not None
         if not run.id:
             run.id = f"run_{uuid4().hex[:12]}"
+        await asyncio.to_thread(self._save_run_sync, run)
 
+    def _save_run_sync(self, run: JobRun) -> None:
+        """Insert or replace a job run in SQLite (sync)."""
+        assert self._db is not None
         self._db.execute(
             """INSERT OR REPLACE INTO job_runs
                (id, job_id, started_at_ms, finished_at_ms, status, result, error, duration_ms)
@@ -449,6 +441,20 @@ class JobStore:
         offset: int = 0,
     ) -> tuple[list[JobRun], int]:
         """Get job runs with filters."""
+        return await asyncio.to_thread(
+            self._get_runs_sync, job_id, status, since_ms, until_ms, limit, offset
+        )
+
+    def _get_runs_sync(
+        self,
+        job_id: str | None,
+        status: RunStatus | None,
+        since_ms: int | None,
+        until_ms: int | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[JobRun], int]:
+        """Query job runs from SQLite (sync)."""
         assert self._db is not None
         conditions = []
         params: list[Any] = []
@@ -468,13 +474,11 @@ class JobStore:
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-        # Get total count
         count_row = self._db.execute(
             f"SELECT COUNT(*) as cnt FROM job_runs {where}", params
         ).fetchone()
         total = count_row["cnt"] if count_row else 0
 
-        # Get paginated results
         rows = self._db.execute(
             f"SELECT * FROM job_runs {where} ORDER BY started_at_ms DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
@@ -517,6 +521,10 @@ class JobStore:
 
     async def get_job_stats(self, job_id: str) -> JobStats:
         """Get statistics for a single job."""
+        return await asyncio.to_thread(self._get_job_stats_sync, job_id)
+
+    def _get_job_stats_sync(self, job_id: str) -> JobStats:
+        """Query job statistics from SQLite (sync)."""
         assert self._db is not None
         stats = JobStats(job_id=job_id)
 
@@ -554,6 +562,10 @@ class JobStore:
 
     async def get_runs_stats_today(self) -> dict[str, Any]:
         """Get run statistics for today."""
+        return await asyncio.to_thread(self._get_runs_stats_today_sync)
+
+    def _get_runs_stats_today_sync(self) -> dict[str, Any]:
+        """Query today's run stats from SQLite (sync)."""
         assert self._db is not None
         now = datetime.now()
         start_of_day_ms = int(
@@ -585,6 +597,10 @@ class JobStore:
 
     async def delete_old_runs(self, before_ms: int) -> int:
         """Delete runs older than the given timestamp."""
+        return await asyncio.to_thread(self._delete_old_runs_sync, before_ms)
+
+    def _delete_old_runs_sync(self, before_ms: int) -> int:
+        """Delete old runs from SQLite (sync)."""
         assert self._db is not None
         cursor = self._db.execute(
             "DELETE FROM job_runs WHERE started_at_ms < ?", (before_ms,)
@@ -596,7 +612,7 @@ class JobStore:
 
     async def export_to_yaml(self) -> None:
         """Force write YAML config to disk."""
-        self._write_yaml()
+        await asyncio.to_thread(self._write_yaml)
 
     async def get_yaml_path(self) -> Path:
         """Get the path to the YAML config file."""
@@ -608,6 +624,6 @@ class JobStore:
         Returns:
             Number of jobs loaded
         """
-        self._load_yaml()
-        self._reconcile_state()
+        await asyncio.to_thread(self._load_yaml)
+        await asyncio.to_thread(self._reconcile_state)
         return len(self._jobs)

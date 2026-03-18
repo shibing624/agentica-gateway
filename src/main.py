@@ -318,7 +318,7 @@ async def switch_model(request: ModelSwitchRequest):
     if not agent_service:
         raise HTTPException(status_code=503, detail="Service not ready")
 
-    agent_service.reload_model(request.model_provider, request.model_name)
+    await agent_service.reload_model(request.model_provider, request.model_name)
     settings.model_provider = request.model_provider
     settings.model_name = request.model_name
 
@@ -339,7 +339,7 @@ async def toggle_thinking(request: ThinkingToggleRequest):
     new_val = "enabled" if request.enabled else ""
     settings.model_thinking = new_val
     if agent_service:
-        agent_service.reload_model(settings.model_provider, settings.model_name)
+        await agent_service.reload_model(settings.model_provider, settings.model_name)
     return {"status": "ok", "thinking": new_val}
 
 
@@ -357,36 +357,43 @@ class BaseDirRequest(BaseModel):
 @app.post("/api/config/base_dir")
 async def set_base_dir(request: BaseDirRequest):
     """修改 working directory"""
-    p = Path(request.base_dir).expanduser()
+    raw = request.base_dir.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="路径不能为空")
+    p = Path(raw).expanduser().resolve()
+    logger.debug(f"set_base_dir: raw='{raw}' resolved='{p}' exists={p.exists()} is_dir={p.is_dir() if p.exists() else 'N/A'}")
     created = False
     if not p.exists():
-        # Parent exists → auto-create the last-level dir; otherwise reject
         if p.parent.exists():
             p.mkdir(parents=False, exist_ok=True)
             created = True
         else:
-            raise HTTPException(status_code=400, detail="文件夹路径不存在，需要写一个存在的路径")
+            raise HTTPException(status_code=400, detail=f"路径不存在且无法自动创建: {p}")
     elif not p.is_dir():
-        raise HTTPException(status_code=400, detail="该路径不是文件夹")
+        raise HTTPException(status_code=400, detail=f"该路径不是文件夹: {p}")
     settings.base_dir = p
     if agent_service:
         agent_service.update_work_dir(str(p))
-    _add_dir_history(str(p))
+    await _add_dir_history(str(p))
     return {"status": "ok", "base_dir": str(p), "created": created}
 
 
-def _switch_work_dir(work_dir: str):
-    """切换 Agent 工作目录（per-session 调用）"""
+_work_dir_lock = asyncio.Lock()
+
+
+async def _switch_work_dir(work_dir: str):
+    """切换 Agent 工作目录（per-session 调用），加锁防止并发覆盖"""
     p = Path(work_dir).expanduser()
     if not p.is_dir():
         return
-    current = str(settings.base_dir)
-    if str(p) == current:
-        return
-    settings.base_dir = p
-    if agent_service:
-        agent_service.update_work_dir(str(p))
-    _add_dir_history(str(p))
+    async with _work_dir_lock:
+        current = str(settings.base_dir)
+        if str(p) == current:
+            return
+        settings.base_dir = p
+        if agent_service:
+            agent_service.update_work_dir(str(p))
+        await _add_dir_history(str(p))
 
 
 # ---- Dir history management ----
@@ -395,45 +402,47 @@ _DIR_HISTORY_MAX = 20
 def _dir_history_file() -> Path:
     return settings.data_dir / "dir_history.json"
 
-def _load_dir_history() -> list[str]:
+async def _load_dir_history() -> list[str]:
     f = _dir_history_file()
     if f.exists():
         try:
-            return json_mod.loads(f.read_text())
+            text = await asyncio.to_thread(f.read_text)
+            return json_mod.loads(text)
         except Exception:
             pass
     return []
 
-def _save_dir_history(history: list[str]):
+async def _save_dir_history(history: list[str]):
     f = _dir_history_file()
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json_mod.dumps(history, ensure_ascii=False))
+    data = json_mod.dumps(history, ensure_ascii=False)
+    await asyncio.to_thread(f.write_text, data)
 
-def _add_dir_history(path: str):
-    history = _load_dir_history()
+async def _add_dir_history(path: str):
+    history = await _load_dir_history()
     if path in history:
         history.remove(path)
     history.insert(0, path)
     history = history[:_DIR_HISTORY_MAX]
-    _save_dir_history(history)
+    await _save_dir_history(history)
 
 
 @app.get("/api/config/dir_history")
 async def get_dir_history():
     """获取历史路径列表"""
-    history = _load_dir_history()
+    history = await _load_dir_history()
     # Ensure current base_dir is in history
     current = str(settings.base_dir)
     if current not in history:
         history.insert(0, current)
-        _save_dir_history(history)
+        await _save_dir_history(history)
     return {"history": history}
 
 
 @app.delete("/api/config/dir_history")
 async def clear_dir_history():
     """清空历史路径"""
-    _save_dir_history([str(settings.base_dir)])
+    await _save_dir_history([str(settings.base_dir)])
     return {"status": "ok"}
 
 
@@ -483,7 +492,7 @@ async def chat(request: ChatRequest):
 
     # 按 session 的 work_dir 切换工作目录
     if request.work_dir:
-        _switch_work_dir(request.work_dir)
+        await _switch_work_dir(request.work_dir)
 
     result = await agent_service.chat(
         message=request.message,
@@ -507,7 +516,7 @@ async def chat_stream(request: ChatRequest):
 
     # 按 session 的 work_dir 切换工作目录
     if request.work_dir:
-        _switch_work_dir(request.work_dir)
+        await _switch_work_dir(request.work_dir)
 
     async def event_generator():
         queue: asyncio.Queue[dict | None] = asyncio.Queue()
@@ -638,7 +647,7 @@ async def save_memory(request: MemoryRequest):
     if not agent_service:
         raise HTTPException(status_code=503, detail="Service not ready")
 
-    agent_service.save_memory(request.content, user_id=request.user_id, long_term=request.long_term)
+    await agent_service.save_memory(request.content, user_id=request.user_id, long_term=request.long_term)
     return {"status": "saved", "user_id": request.user_id}
 
 
@@ -672,7 +681,7 @@ async def upload_file(
     """上传文件到 working directory"""
     base = Path(target_dir) if target_dir else settings.workspace_path
     base.mkdir(parents=True, exist_ok=True)
-    dest = base / file.filename
+    dest = base / Path(file.filename).name
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
     return {"status": "ok", "path": str(dest), "filename": file.filename, "size": dest.stat().st_size}
@@ -1131,7 +1140,8 @@ class ConnectionManager:
 
     async def broadcast(self, event: str, payload: dict):
         """广播事件到所有客户端"""
-        for ws in self.active_connections.values():
+        dead_clients = []
+        for client_id, ws in self.active_connections.items():
             try:
                 await ws.send_json({
                     "type": "event",
@@ -1139,7 +1149,9 @@ class ConnectionManager:
                     "payload": payload,
                 })
             except Exception:
-                pass
+                dead_clients.append(client_id)
+        for client_id in dead_clients:
+            self.disconnect(client_id)
 
     def count(self) -> int:
         """连接数"""
@@ -1155,6 +1167,9 @@ async def websocket_endpoint(websocket: WebSocket):
     client_id = None
 
     try:
+        # 先 accept 连接，才能 receive 数据
+        await websocket.accept()
+
         # 等待连接请求
         data = await websocket.receive_json()
 
@@ -1170,9 +1185,10 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.close(code=4001, reason="Invalid token")
             return
 
-        # 接受连接
+        # 注册连接（已 accept，不再重复调用）
         client_id = params.get("client", {}).get("id", "unknown")
-        await ws_manager.connect(websocket, client_id)
+        ws_manager.active_connections[client_id] = websocket
+        logger.debug(f"WebSocket connected: {client_id}")
 
         # 发送 hello-ok
         await websocket.send_json({
@@ -1306,6 +1322,10 @@ async def feishu_webhook(request: dict):
 
 async def setup_channels():
     """设置渠道"""
+    if not channel_manager:
+        logger.warning("Channel manager not initialized, skip channel setup")
+        return
+
     from .channels.feishu import FeishuChannel
     from .channels.telegram import TelegramChannel
     from .channels.discord import DiscordChannel
@@ -1396,7 +1416,7 @@ async def handle_channel_message(message):
         await channel_manager.send(
             message.channel,
             message.channel_id,
-            f"处理失败: {e}",
+            "处理消息时出现内部错误，请稍后重试",
         )
 
 
