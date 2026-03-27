@@ -12,6 +12,11 @@ lark-oapi>=1.0.0        # Feishu
 apscheduler>=3.10.0     # Scheduler
 pyyaml>=6.0             # YAML config
 
+# Testing
+pytest>=7.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0           # Required by FastAPI TestClient
+
 # Optional: Telegram
 # python-telegram-bot>=20.0
 

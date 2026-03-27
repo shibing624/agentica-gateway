@@ -87,6 +87,9 @@ class SchedulerService:
         # Initialize store
         await self.store.initialize()
 
+        # Prune old run history to keep the SQLite file bounded
+        await self._prune_old_runs()
+
         # Activate pending jobs
         await self._activate_jobs()
 
@@ -315,6 +318,24 @@ class SchedulerService:
 
         if activated:
             logger.info(f"Activated {activated} pending jobs")
+
+    async def _prune_old_runs(self) -> None:
+        """Delete job_runs older than settings.job_runs_retention_days.
+
+        Called once on startup to keep the SQLite file bounded.
+        """
+        try:
+            from src.config import settings as _settings
+            retention_days = getattr(_settings, "job_runs_retention_days", 30)
+        except Exception:
+            retention_days = 30
+
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(days=retention_days)
+        cutoff_ms = int(cutoff.timestamp() * 1000)
+        deleted = await self.store.delete_old_runs(before_ms=cutoff_ms)
+        if deleted:
+            logger.info(f"Pruned {deleted} job_runs older than {retention_days} days")
 
     # ============== Legacy Compatibility ==============
     # These methods provide compatibility with the old API

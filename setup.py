@@ -1,8 +1,16 @@
 from setuptools import setup, find_packages
 
+# Read version from the package to ensure single source of truth
+def _get_version():
+    import re
+    with open("src/__init__.py") as f:
+        m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', f.read())
+        return m.group(1) if m else "0.0.0"
+
+
 setup(
     name="agentica-gateway",
-    version="0.1.1",
+    version=_get_version(),
     description="Agentica Gateway Service - Python OpenClaw",
     python_requires=">=3.10",
     packages=find_packages(),
@@ -21,6 +29,11 @@ setup(
     extras_require={
         "telegram": ["python-telegram-bot>=20.0"],
         "discord": ["discord.py>=2.0"],
+        "test": [
+            "pytest>=7.0",
+            "pytest-asyncio>=0.23.0",
+            "httpx>=0.27.0",
+        ],
         "all": [
             "python-telegram-bot>=20.0",
             "discord.py>=2.0",

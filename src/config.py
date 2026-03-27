@@ -1,4 +1,4 @@
-"""配置管理 - FastAPI 服务配置"""
+"""Configuration management for the gateway service."""
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,29 +10,44 @@ load_dotenv(override=True)
 
 @dataclass
 class Settings:
-    """服务配置"""
+    """Gateway service configuration."""
 
-    # 服务配置
+    # Server
     host: str = "0.0.0.0"
     port: int = 8789
     debug: bool = False
+    # API authentication token; empty string disables auth (local dev)
     gateway_token: Optional[str] = None
 
-    # 默认用户ID（单用户场景）
+    # Default user ID (single-user scenario)
     default_user_id: str = "default"
 
-    # 工作空间（agent 数据/配置存储）
+    # Paths
     workspace_path: Path = field(default_factory=lambda: Path.home() / ".agentica" / "workspace")
     data_dir: Path = field(default_factory=lambda: Path.home() / ".agentica" / "data")
-    # Agent 工作目录（shell 命令执行的 cwd，默认用户 home）
+    # Agent working directory (cwd for shell tool), defaults to user home
     base_dir: Path = field(default_factory=Path.home)
 
-    # 模型配置
+    # Model
     model_provider: str = "zhipuai"
     model_name: str = "glm-4.7-flash"
-    model_thinking: str = ""  # 思考模式：enabled / disabled / auto，空则不启用
+    model_thinking: str = ""  # thinking mode: enabled / disabled / auto, empty = off
 
-    # 飞书
+    # Agent cache: max number of concurrent Agent instances kept in LRU cache
+    agent_max_sessions: int = 50
+
+    # File upload limits
+    upload_max_size_mb: int = 50
+    # Comma-separated allowed extensions (empty = allow all, not recommended for production)
+    upload_allowed_extensions: str = (
+        ".txt,.md,.py,.js,.ts,.jsx,.tsx,.json,.yaml,.yml,.toml,.csv,"
+        ".pdf,.png,.jpg,.jpeg,.gif,.webp,.svg,.zip,.tar,.gz"
+    )
+
+    # Run history retention (days); runs older than this are pruned on startup
+    job_runs_retention_days: int = 30
+
+    # Feishu
     feishu_app_id: Optional[str] = None
     feishu_app_secret: Optional[str] = None
     feishu_allowed_users: List[str] = field(default_factory=list)
@@ -47,23 +62,32 @@ class Settings:
     discord_allowed_users: List[str] = field(default_factory=list)
     discord_allowed_guilds: List[str] = field(default_factory=list)
 
+    @property
+    def upload_allowed_ext_set(self) -> set[str]:
+        """Return upload_allowed_extensions as a lowercase set for fast lookup."""
+        return {
+            e.strip().lower()
+            for e in self.upload_allowed_extensions.split(",")
+            if e.strip()
+        }
+
     @classmethod
     def from_env(cls) -> "Settings":
-        """从环境变量加载配置"""
+        """Load configuration from environment variables."""
         allowed_users = os.getenv("FEISHU_ALLOWED_USERS", "")
         allowed_groups = os.getenv("FEISHU_ALLOWED_GROUPS", "")
 
         return cls(
-            # 服务
+            # Server
             host=os.getenv("HOST", "0.0.0.0"),
             port=int(os.getenv("PORT", "8789")),
             debug=os.getenv("DEBUG", "").lower() in ("1", "true"),
-            gateway_token=os.getenv("GATEWAY_TOKEN"),
+            gateway_token=os.getenv("GATEWAY_TOKEN") or None,
 
-            # 默认用户ID
+            # Default user
             default_user_id=os.getenv("DEFAULT_USER_ID", "default"),
 
-            # 路径
+            # Paths
             workspace_path=Path(os.getenv(
                 "AGENTICA_WORKSPACE_DIR", str(Path.home() / ".agentica" / "workspace")
             )),
@@ -74,12 +98,26 @@ class Settings:
                 "AGENTICA_BASE_DIR", str(Path.home())
             )),
 
-            # 模型
+            # Model
             model_provider=os.getenv("AGENTICA_MODEL_PROVIDER", "zhipuai"),
             model_name=os.getenv("AGENTICA_MODEL_NAME", "glm-4.7-flash"),
             model_thinking=os.getenv("AGENTICA_MODEL_THINKING", ""),
 
-            # 飞书
+            # Agent cache
+            agent_max_sessions=int(os.getenv("AGENT_MAX_SESSIONS", "50")),
+
+            # Upload limits
+            upload_max_size_mb=int(os.getenv("UPLOAD_MAX_SIZE_MB", "50")),
+            upload_allowed_extensions=os.getenv(
+                "UPLOAD_ALLOWED_EXTENSIONS",
+                ".txt,.md,.py,.js,.ts,.jsx,.tsx,.json,.yaml,.yml,.toml,.csv,"
+                ".pdf,.png,.jpg,.jpeg,.gif,.webp,.svg,.zip,.tar,.gz",
+            ),
+
+            # Run history retention
+            job_runs_retention_days=int(os.getenv("JOB_RUNS_RETENTION_DAYS", "30")),
+
+            # Feishu
             feishu_app_id=os.getenv("FEISHU_APP_ID"),
             feishu_app_secret=os.getenv("FEISHU_APP_SECRET"),
             feishu_allowed_users=[
@@ -106,5 +144,5 @@ class Settings:
         )
 
 
-# 全局配置实例
+# Global settings instance
 settings = Settings.from_env()

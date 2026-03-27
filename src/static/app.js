@@ -897,7 +897,7 @@ function renderMsg(m){
         const hasBody=text.length>80||text.includes('\n');
         h+=`<div class="think-row${hasBody?' has-body':''}"${hasBody?` onclick="toggleThinkBody(this)"`:''}>`;
         if(hasBody) h+=`<span class="tg-arrow">&#x25B8;</span>`;
-        h+=`<span class="think-icon">💭</span><span class="think-lbl">Thinking</span><span class="think-preview">${esc(preview)}</span></div>`;
+        h+=`<span class="think-icon">💭</span><span class="think-preview">${esc(preview)}</span></div>`;
         if(hasBody) h+=`<div class="think-body">${esc(text)}</div>`;
       } else if(sec.type==='tools'){
         const n=sec.items.length;
@@ -1268,7 +1268,6 @@ function updateLiveSteps(msg){
         const bodyEl=existing.querySelector('.think-body');
         const lblEl=existing.querySelector('.think-lbl');
         if(previewEl) previewEl.textContent=preview;
-        if(lblEl) lblEl.textContent=isLast?'Thinking…':'Thinking';
         if(bodyEl) bodyEl.textContent=text;
         // During streaming, auto-open the body for the last (active) thinking
         if(isLast && bodyEl){
@@ -1324,7 +1323,6 @@ function updateLiveSteps(msg){
         div.innerHTML=`<div class="think-row has-body" onclick="toggleThinkBody(this)">
           <span class="tg-arrow${isLast?' open':''}">&#x25B8;</span>
           <span class="think-icon">💭</span>
-          <span class="think-lbl">Thinking${isLast?'…':''}</span>
           <span class="think-preview">${esc(preview)}</span>
         </div><div class="think-body${isLast?' open':''}">${esc(text)}</div>`;
       } else if(sec.type==='tools'){
