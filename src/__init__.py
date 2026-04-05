@@ -1,3 +1,3 @@
 """Agentica Gateway - Python AI Agent gateway service."""
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"

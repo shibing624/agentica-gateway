@@ -6,6 +6,7 @@ Key design decisions:
 - Fail fast on initialization errors (no silent mock mode)
 - cancel_session(session_id) for precise stream cancellation
 - Agent build timeout to guard against SDK hangs
+- Uses DeepAgent (batteries-included) instead of manual Agent + builtin tools
 """
 import asyncio
 import json
@@ -15,11 +16,10 @@ from pathlib import Path
 from typing import Optional, Callable, List, Any, Dict
 
 from loguru import logger
-from agentica import Agent
+from agentica import DeepAgent
 from agentica.run_response import AgentCancelledError
 from agentica.run_config import RunConfig
 from agentica.workspace import Workspace
-from agentica.agent.config import WorkspaceMemoryConfig, ToolConfig, PromptConfig
 
 from ..config import settings
 
@@ -42,27 +42,19 @@ class ChatResult:
 
 
 class LRUAgentCache:
-    """Thread-unsafe but asyncio-safe LRU cache for Agent instances.
-
-    Evicts the least-recently-used session when capacity is exceeded.
-    All access is single-threaded within the asyncio event loop.
-
-    Structure:
-        OrderedDict[session_id -> Agent]
-        Most-recently-used at the end (move_to_end on get/set).
-    """
+    """Thread-unsafe but asyncio-safe LRU cache for DeepAgent instances."""
 
     def __init__(self, max_size: int = 50):
-        self._cache: OrderedDict[str, Agent] = OrderedDict()
+        self._cache: OrderedDict[str, DeepAgent] = OrderedDict()
         self.max_size = max_size
 
-    def get(self, session_id: str) -> Optional[Agent]:
+    def get(self, session_id: str) -> Optional[DeepAgent]:
         if session_id not in self._cache:
             return None
         self._cache.move_to_end(session_id)
         return self._cache[session_id]
 
-    def put(self, session_id: str, agent: Agent) -> None:
+    def put(self, session_id: str, agent: DeepAgent) -> None:
         if session_id in self._cache:
             self._cache.move_to_end(session_id)
             self._cache[session_id] = agent
@@ -155,56 +147,42 @@ class AgentService:
             )
             raise RuntimeError(f"AgentService init failed: {e}") from e
 
-    def _build_agent(self) -> Agent:
-        """Build a new Agent instance (sync, runs in thread)."""
-        from agentica.tools.buildin_tools import get_builtin_tools
+    def _build_agent(self) -> DeepAgent:
+        """Build a new DeepAgent instance (sync, runs in thread).
 
+        DeepAgent auto-includes: builtin tools, skills, agentic prompt,
+        compression, workspace memory, conversation archive.
+        Only extra tools and scheduler need manual addition.
+        """
         model = self._create_model()
-
-        # Load all built-in tools (file, execute, web_search, todos, task, memory, etc.)
         work_dir = str(settings.base_dir)
-        builtin = get_builtin_tools(
-            work_dir=work_dir,
-            workspace=self._workspace,
-        )
 
-        all_tools = builtin + list(self.extra_tools)
+        # Extra tools: user-provided + scheduler
+        extra = list(self.extra_tools)
         scheduler_tools = self._get_scheduler_tools()
-        all_tools.extend(scheduler_tools)
+        extra.extend(scheduler_tools)
 
-        instructions = list(self.extra_instructions) if self.extra_instructions else []
+        instructions = list(self.extra_instructions) if self.extra_instructions else None
         if scheduler_tools:
+            if instructions is None:
+                instructions = []
             instructions.append(self._get_scheduler_instructions())
 
-        agent = Agent(
+        agent = DeepAgent(
             model=model,
+            tools=extra if extra else None,
             workspace=self._workspace,
-            tools=all_tools if all_tools else None,
-            instructions=instructions if instructions else None,
-            add_history_to_messages=True,
+            work_dir=work_dir,
             history_window=14,
+            instructions=instructions,
             debug=settings.debug,
-            long_term_memory_config=WorkspaceMemoryConfig(
-                load_workspace_context=True,
-                load_workspace_memory=True,
-                memory_days=7,
-            ),
-            tool_config=ToolConfig(
-                tool_call_limit=40,
-                auto_load_mcp=True,
-                context_overflow_threshold=0.8,
-                max_repeated_tool_calls=3,
-            ),
-            prompt_config=PromptConfig(
-                add_datetime_to_instructions=True,
-                enable_agentic_prompt=True,
-            ),
         )
 
-        logger.info(f"Tools loaded: {len(all_tools)} (builtin={len(builtin)}, extra={len(self.extra_tools)}, scheduler={len(scheduler_tools)})")
+        tool_count = len(agent.tools) if agent.tools else 0
+        logger.info(f"DeepAgent built: {tool_count} tools (extra={len(extra)}, scheduler={len(scheduler_tools)})")
         return agent
 
-    async def _get_agent(self, session_id: str) -> Agent:
+    async def _get_agent(self, session_id: str) -> DeepAgent:
         """Return the cached Agent for a session, creating one if absent.
 
         Raises RuntimeError if the agent cannot be built (e.g. SDK error).
@@ -331,7 +309,7 @@ class AgentService:
     # ============== Metrics helpers ==============
 
     @staticmethod
-    def _extract_metrics(agent: Optional[Agent]) -> Optional[Dict[str, Any]]:
+    def _extract_metrics(agent: Optional[DeepAgent]) -> Optional[Dict[str, Any]]:
         """Extract metrics from the agent's last run_response."""
         if not agent:
             return None
@@ -651,18 +629,26 @@ class AgentService:
         await self._ensure_initialized()
         if self._workspace and self._workspace.exists():
             await asyncio.to_thread(self._workspace.set_user, user_id)
-            if long_term:
-                await asyncio.to_thread(self._workspace.write_memory, content)
-            else:
-                await asyncio.to_thread(self._workspace.write_memory, content, True)
+            await self._workspace.write_memory(content)
             logger.debug(f"Memory saved for user {user_id}: {content[:50]}...")
 
-    async def get_memory(self, user_id: str = "default", days: int = 7) -> str:
-        """Retrieve memory prompt for a user."""
+    async def get_memory(self, user_id: str = "default", query: str = "", limit: int = 5) -> str:
+        """Retrieve memory for a user via search_memory (keyword/bigram matching).
+
+        Args:
+            user_id: User identifier
+            query: Search query (empty returns recent entries)
+            limit: Maximum number of entries
+        """
         await self._ensure_initialized()
         if self._workspace and self._workspace.exists():
             await asyncio.to_thread(self._workspace.set_user, user_id)
-            return await asyncio.to_thread(self._workspace.get_memory_prompt, days=days) or ""
+            results = self._workspace.search_memory(query=query, limit=limit)
+            if results:
+                return "\n\n".join(
+                    f"**{r.get('title', 'Memory')}**: {r.get('content', '')}"
+                    for r in results
+                )
         return ""
 
     async def get_workspace_context(self, user_id: str = "default") -> str:
@@ -670,7 +656,7 @@ class AgentService:
         await self._ensure_initialized()
         if self._workspace and self._workspace.exists():
             await asyncio.to_thread(self._workspace.set_user, user_id)
-            return await asyncio.to_thread(self._workspace.get_context_prompt) or ""
+            return await self._workspace.get_context_prompt() or ""
         return ""
 
     async def list_users(self) -> List[str]:
@@ -721,8 +707,8 @@ class AgentService:
         return self._workspace
 
     @property
-    def agent(self) -> Optional[Agent]:
-        """Deprecated: returns an arbitrary cached Agent.
+    def agent(self) -> Optional[DeepAgent]:
+        """Deprecated: returns an arbitrary cached DeepAgent.
 
         Prefer cancel_session(session_id) for targeted cancellation.
         """
