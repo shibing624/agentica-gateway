@@ -12,6 +12,7 @@ let serverModelName = '';
 let serverVersion = '';
 let modelsData = null;
 let userScrolledUp = false;
+let _scrollLock = false;  // 用户主动上翻后锁定，不再因内容增长而意外滚动
 let thinkingEnabled = false;
 let serverContextWindow = 128000;
 
@@ -315,15 +316,34 @@ document.addEventListener('DOMContentLoaded',()=>{
   const chatArea=document.getElementById('chatArea');
   chatArea.addEventListener('scroll',()=>{
     updateScrollBtn();
-    // If user scrolled near bottom, re-enable auto-scroll
-    if(isNearBottom()) userScrolledUp=false;
+    // 用户滚动到接近底部时，解除锁定
+    if(isNearBottom()){ userScrolledUp=false; _scrollLock=false; }
+    else if(streaming && !_scrollLock){
+      // 流式期间，只要不是在底部就算上翻
+      userScrolledUp=true;
+    }
   });
   // Detect user-initiated scroll (wheel / touch) — any upward scroll immediately triggers
   chatArea.addEventListener('wheel',(e)=>{
-    if(streaming && e.deltaY<0){ userScrolledUp=true; updateScrollBtn(); }
-    if(streaming && e.deltaY>0 && isNearBottom()){ userScrolledUp=false; updateScrollBtn(); }
+    if(!streaming) return;
+    if(e.deltaY<0 && isNearBottom()){
+      // 在底部附近上翻 → 立即锁定
+      _scrollLock=true;
+      userScrolledUp=true;
+      updateScrollBtn();
+    } else if(e.deltaY>0 && !isNearBottom()){
+      // 非底部区域下滚 → 不解锁（用户还在浏览中间内容）
+      updateScrollBtn();
+    } else if(e.deltaY>0 && isNearBottom()){
+      userScrolledUp=false; _scrollLock=false; updateScrollBtn();
+    }
   },{passive:true});
-  chatArea.addEventListener('touchmove',()=>{if(streaming && !isNearBottom()) userScrolledUp=true; updateScrollBtn();},{passive:true});
+  chatArea.addEventListener('touchmove',()=>{
+    if(streaming && !isNearBottom()){
+      if(!_scrollLock){ userScrolledUp=true; _scrollLock=true; }
+    }
+    updateScrollBtn();
+  },{passive:true});
 });
 
 async function loadStatus(){
@@ -996,6 +1016,7 @@ function toggleToolGroup(moreEl, gid){
 function scrollEnd(){
   const a=document.getElementById('chatArea');
   userScrolledUp=false;
+  _scrollLock=false;
   requestAnimationFrame(()=>{a.scrollTop=a.scrollHeight});
   updateScrollBtn();
 }
@@ -1008,10 +1029,8 @@ function isNearBottom(){
 
 // Auto-scroll only if user hasn't deliberately scrolled up
 function autoScroll(){
-  if(userScrolledUp){
-    updateScrollBtn();
-    return;
-  }
+  // 一旦锁定（用户上翻），完全停止自动滚动，只更新按钮
+  if(_scrollLock || userScrolledUp){ updateScrollBtn(); return; }
   if(isNearBottom()){
     scrollEnd();
   } else {
@@ -1023,10 +1042,10 @@ function updateScrollBtn(){
   const btn=document.getElementById('scrollBottomBtn');
   if(!btn)return;
   const a=document.getElementById('chatArea');
-  // During streaming: show immediately when user scrolls up at all
-  // Otherwise: show when scrolled up more than ~half a screen
   const dist=a.scrollHeight - a.scrollTop - a.clientHeight;
-  const show=streaming && userScrolledUp ? dist>30 : dist>a.clientHeight*0.5;
+  // 流式输出时：只要用户上翻（_scrollLock）或不在底部，就显示下箭头
+  // 非流式时：滚动超过半屏才显示
+  const show=streaming ? (dist>30) : (dist>a.clientHeight*0.5);
   btn.classList.toggle('visible', show);
 }
 
@@ -1201,7 +1220,7 @@ async function sendMessage(){
     else aiMsg.content+=aiMsg.content?'\n\n*(stopped)*':'*(stopped)*';
   }
 
-  streaming=false;abortCtrl=null;userScrolledUp=false;
+  streaming=false;abortCtrl=null;userScrolledUp=false;_scrollLock=false;
   setSend();
   updateScrollBtn();
   s.ts=Date.now();save();
