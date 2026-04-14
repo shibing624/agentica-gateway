@@ -8,18 +8,21 @@ Key design decisions:
 - Agent build timeout to guard against SDK hangs
 - Uses DeepAgent (batteries-included) instead of manual Agent + builtin tools
 """
+import os
+import sys
 import asyncio
 import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Callable, List, Any, Dict
-
 from loguru import logger
+
 from agentica import DeepAgent
 from agentica.run_response import AgentCancelledError
 from agentica.run_config import RunConfig
 from agentica.workspace import Workspace
+from agentica.agent.config import WorkspaceMemoryConfig
 
 from ..config import settings
 
@@ -151,7 +154,7 @@ class AgentService:
         """Build a new DeepAgent instance (sync, runs in thread).
 
         DeepAgent auto-includes: builtin tools, skills, agentic prompt,
-        compression, workspace memory, conversation archive.
+        compression, workspace memory, conversation archive, memory tools.
         Only extra tools and scheduler need manual addition.
         """
         model = self._create_model()
@@ -173,9 +176,20 @@ class AgentService:
             tools=extra if extra else None,
             workspace=self._workspace,
             work_dir=work_dir,
-            history_window=14,
+            history_window=6,
             instructions=instructions,
             debug=settings.debug,
+            # Full-featured: memory, skills, user input all enabled
+            memory=True,
+            include_skills=True,
+            include_user_input=True,
+            long_term_memory_config=WorkspaceMemoryConfig(
+                auto_archive=True,
+                auto_extract_memory=True,
+                load_workspace_context=True,
+                load_workspace_memory=True,
+                max_memory_entries=10,
+            ),
         )
 
         tool_count = len(agent.tools) if agent.tools else 0
