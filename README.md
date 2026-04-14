@@ -1,5 +1,7 @@
 # Agentica Gateway
 
+> **Note:** 本项目的全部功能已合并至 [agentica](https://github.com/shibing624/agentica) SDK，此仓库已归档（Archived），不再单独维护。
+
 Agentica Gateway 服务，调用 [agentica](https://github.com/shibing624/agentica) SDK。
 
 支持Lark/Feishu(飞书)、WeCom(企微)、Telegram、Discord、Gradio 等多渠道接入的 AI Agent 网关。
